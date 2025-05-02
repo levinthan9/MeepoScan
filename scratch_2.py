@@ -34,7 +34,7 @@ current_frame = None  # Shared between threads
 
 # Create a queue to hold processed frames
 ocr_queue = queue.Queue()
-# Create a flag to toggle between Original and Processed frames
+# =============================== CONFIG ===============================
 use_processed_frame = False  # Default is original frame
 scan_interval = 3
 
