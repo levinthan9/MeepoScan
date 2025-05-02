@@ -32,6 +32,34 @@ number_var = None
 mode_var = None
 current_frame = None  # Shared between threads
 
+# Create a queue to hold processed frames
+ocr_queue = queue.Queue()
+# Create a flag to toggle between Original and Processed frames
+use_processed_frame = False  # Default is original frame
+
+def sharpen(image):
+    kernel = np.array([[0, -1, 0],
+                       [-1, 5, -1],
+                       [0, -1, 0]])
+    return cv2.filter2D(image, -1, kernel)
+
+
+def enhance_contrast(image):
+    return cv2.equalizeHist(image)
+
+
+def binarize(image):
+    return cv2.adaptiveThreshold(image, 255,
+                                 cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                 cv2.THRESH_BINARY, 11, 2)
+
+
+def preprocess_for_ocr(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    sharp = sharpen(gray)
+    contrast = enhance_contrast(sharp)
+    binary = binarize(contrast)
+    return binary
 
 def update_status():
     if blink_state:
@@ -57,6 +85,10 @@ def toggle_thread():
         Thread(target=background_task, daemon=True).start()
         start_button.config(text="Stop")
 
+def toggle_frame():
+    global use_processed_frame
+    use_processed_frame = not use_processed_frame
+    toggle_button.config(text="Use Processed Frame" if not use_processed_frame else "Use Original Frame")
 
 def toggle_mode():
     global check_type
@@ -85,6 +117,31 @@ def update_video():
 
     root.after(10, update_video)
 
+
+def capture_and_process_frame():
+    global use_processed_frame
+
+    # Coordinates for cropping (adjust as necessary for your rectangle)
+    x, y, w, h = 100, 100, 300, 200  # Example rectangle
+
+    ret, frame = cap.read()  # Capture frame
+    if not ret:
+        return
+
+    cropped_frame = frame[y:y+h, x:x+w]  # Crop the rectangle
+
+    # If processed frame is selected, preprocess the frame
+    if use_processed_frame:
+        processed_frame = preprocess_for_ocr(cropped_frame)
+        ocr_queue.put(processed_frame)  # Put the processed frame into the queue
+    else:
+        ocr_queue.put(cropped_frame)  # Put the original frame into the queue
+
+    # Call this function again after 1 second
+    root.after(1000, capture_and_process_frame)
+
+
+# Call capture_and_process_frames when the process starts
 
 def background_task():
     global thread_running, current_frame
@@ -185,6 +242,9 @@ mode_button.pack(side="left", padx=10)
 start_button = tk.Button(button_frame, text="Start", width=10, command=toggle_thread,
                          bg="black", fg="green", font=("Helvetica", 12, "bold"))
 start_button.pack(side="left", padx=10)
+
+toggle_button = tk.Button(button_frame, text="Use Processed Frame", command=toggle_frame, bg="black", fg="green", font=("Helvetica", 12, "bold"))
+toggle_button.pack(side='left', padx=10, pady=10)  # Align button to the left
 
 # ---- Video Display ----
 video_label = tk.Label(root, bg="#2e3b4e")
