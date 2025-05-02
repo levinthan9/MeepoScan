@@ -43,6 +43,10 @@ CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 PRINTER_NAME = "Arkscan-2054K-LAN"
 TEMP_DIR = tempfile.gettempdir()
 
+# Time to wait before allowing the same match again (in seconds)
+DUPLICATE_TIMEOUT = 20
+recent_matches = {}
+
 # =============================== CONFIG ===============================
 autostart = True
 autocrop = False
@@ -151,7 +155,8 @@ def spec_check(serial):
     block = soup.select_one("div.about-your-mac-box")
     if not block:
         #messagebox.showerror("Error", f"Could not find info for serial: {serial}")
-        print(f"Could not find info for serial: {serial}")
+        print(f"\033[91mCould not find info for serial: {serial}\033[0m")
+
         return None
 
     def extract(label):
@@ -277,16 +282,19 @@ def capture_and_process_frame():
         else:
             frame_queue.put(final_frame)  # Put the original frame into the queue
         # Call this function again after 1 second
-    root.after(1000, capture_and_process_frame)
+    root.after(100, capture_and_process_frame)
 
 def main_check(serial):
     if serial:
-        print(serial)
+        if is_duplicate(serial):
+            return
         serial = clean_common_ocr_errors(serial)
+        print(f"\033[92mFound Serial Number: {serial}\033[0m")
         #if amodel:
         #    amodel = clean_common_ocr_errors(amodel)
         #if emc:
         #    emc = clean_common_ocr_errors(emc)
+        print("Checking Spec")
         specs = spec_check(serial)
         if specs:
             cpu, gpu, ram, ssd = specs
@@ -305,6 +313,8 @@ def main_check(serial):
                     log_event(f"Spec Check: {serial} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}")
                 #generate_label(serial, amodel, emc, cpu, gpu, ram, ssd, icloud, mdm, config)
                 generate_label(serial, cpu, gpu, ram, ssd, icloud, mdm, config)
+        else:
+            open_manual_window()
 
 def ocr_processing():
     if stop_event.is_set():
@@ -334,8 +344,9 @@ def ocr_processing():
         print(texts)
         serials, amodels, emcs = extract_matches(texts)
         serial = most_common(serials)
-        amodel = most_common(amodels)
-        emc = most_common(emcs)
+        #serial = "C1MQCSVH0TY3"
+        #amodel = most_common(amodels)
+        #emc = most_common(emcs)
         #print("checking for serial number")
         if serial:
             main_check(serial)
@@ -404,7 +415,6 @@ def background_task():
 
 def open_manual_window():
     global serial, manual_window
-
     # If a manual_window already exists, destroy it
     if manual_window is not None and manual_window.winfo_exists():
         manual_window.destroy()
@@ -434,6 +444,8 @@ def open_manual_window():
         fill = ""
     # Pre-fill the entry field with the current serial
     serial_entry.insert(0, fill)
+    # ** Set the focus to serial_entry so the cursor is ready when the window opens **
+    serial_entry.focus_set()
 
 
     # Function to handle "Check" button click
@@ -453,6 +465,9 @@ def open_manual_window():
     # Place the "Check" button
     check_button = tk.Button(manual_window, text="Check", command=submit_serial)
     check_button.grid(row=1, column=1, pady=10, sticky="e")
+
+    # Bind the Enter key to the submit_serial function
+    manual_window.bind('<Return>', lambda event: submit_serial())
 
 
 
@@ -528,7 +543,7 @@ Thread(target=ocr_processing, daemon=True).start()
 if autostart:
     toggle_thread()
 
-image_path = "/Users/tn/Desktop/s456.png"  # Replace <your-username> with your system username
+image_path = "/Users/tn/Desktop/s234.jpg"  # Replace <your-username> with your system username
 image = cv2.imread(image_path)
 if image is not None:
     print(f"Image loaded successfully: {image_path}")
