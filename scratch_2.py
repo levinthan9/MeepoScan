@@ -243,8 +243,8 @@ start_button = tk.Button(button_frame, text="Start", width=10, command=toggle_th
                          bg="black", fg="green", font=("Helvetica", 12, "bold"))
 start_button.pack(side="left", padx=10)
 
-toggle_button = tk.Button(button_frame, text="Use Processed Frame", command=toggle_frame, bg="black", fg="green", font=("Helvetica", 12, "bold"))
-toggle_button.pack(side='left', padx=10, pady=10)  # Align button to the left
+toggle_frame_button = tk.Button(button_frame, text="Use Processed Frame", command=toggle_frame, bg="black", fg="green", font=("Helvetica", 12, "bold"))
+toggle_frame_button.pack(side='left', padx=10, pady=10)  # Align button to the left
 
 # ---- Video Display ----
 video_label = tk.Label(root, bg="#2e3b4e")
