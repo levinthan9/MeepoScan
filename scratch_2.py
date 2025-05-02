@@ -14,6 +14,7 @@ number_var = None
 mode_var = None
 current_frame = None  # Shared between threads
 
+
 def update_status():
     if blink_state:
         status_var.set("🟢 Running")
@@ -21,11 +22,13 @@ def update_status():
         status_var.set("⚪ Running")
     root.after(500, blink_status)
 
+
 def blink_status():
     global blink_state
     blink_state = not blink_state
     if thread_running:
         update_status()
+
 
 def toggle_thread():
     if thread_running:
@@ -36,6 +39,7 @@ def toggle_thread():
         Thread(target=background_task, daemon=True).start()
         start_button.config(text="Stop")
 
+
 def toggle_mode():
     global check_type
     if thread_running:
@@ -45,8 +49,10 @@ def toggle_mode():
     check_type = not check_type
     mode_var.set("Mode: iCloud-MDM" if check_type else "Mode: Basic")
 
+
 def on_spacebar(event=None):
     toggle_thread()
+
 
 def update_video():
     global current_frame
@@ -60,6 +66,7 @@ def update_video():
         video_label.config(image=imgtk)
 
     root.after(10, update_video)
+
 
 def background_task():
     global thread_running, current_frame
@@ -122,6 +129,7 @@ def background_task():
     thread_running = False
     status_var.set("🔴 Stopped")
 
+
 # GUI Setup
 root = tk.Tk()
 root.title("Meepo Auto Serial Number Scan System")
@@ -171,3 +179,4 @@ root.bind('<space>', on_spacebar)
 update_video()
 
 root.mainloop()
+
