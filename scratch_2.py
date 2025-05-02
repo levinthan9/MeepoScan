@@ -37,6 +37,23 @@ frame_queue = queue.Queue()
 # =============================== CONFIG ===============================
 use_processed_frame = False  # Default is original frame
 scan_interval = 3
+# ROI bounds (adjust as needed)
+roi_x, roi_y, roi_w, roi_h = 600, 100, 800, 300  # crop area
+autostart = True
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 def sharpen(image):
     kernel = np.array([[0, -1, 0],
@@ -102,6 +119,12 @@ def on_spacebar(event=None):
     toggle_thread()
 
 
+
+
+
+
+
+
 def update_video():
     global current_frame,original_frame
     if current_frame is not None:
@@ -137,6 +160,45 @@ def capture_and_process_frame():
 
 def ocr_processing():
     print("1")
+    while True:
+        texts = []
+        start_time = time.time()
+        while time.time() - start_time < 5:
+            processing_frame = frame_queue.get()
+            roi = processing_frame[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
+            result = reader.readtext(roi, detail=0)
+            texts.extend(result)
+        serials, amodels, emcs = extract_matches(texts)
+        serial = most_common(serials)
+        amodel = most_common(amodels)
+        emc = most_common(emcs)
+
+        if serial:
+            serial = clean_common_ocr_errors(serial)
+            if amodel:
+                amodel = clean_common_ocr_errors(amodel)
+            if emc:
+                emc = clean_common_ocr_errors(emc)
+            specs = spec_check(serial)
+            if specs:
+                cpu, gpu, ram, ssd = specs
+                if cpu:
+                    if is_full_check:
+                        icloudInfo = icloudCheck(serial)
+                        if icloudInfo:
+                            icloud, mdm, config = icloudInfo
+                            log_event(
+                                f"iCloud MDM Check: {serial} | Amodel: {amodel} | EMC: {emc} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} ")
+                    else:
+                        icloud = None
+                        mdm = None
+                        config = None
+                        log_event(
+                            f"Spec Check: {serial} | Amodel: {amodel} | EMC: {emc} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}")
+                    generate_label(serial, amodel, emc, cpu, gpu, ram, ssd, icloud, mdm, config)
+                # else:
+                # ui_queue.put(("edit_fields", serial, amodel, emc))
+    frame_queue.task_done()
 def background_task():
     global thread_running, current_frame
     thread_running = True
@@ -198,6 +260,15 @@ def background_task():
     status_var.set("🔴 Stopped")
 
 
+
+
+
+
+
+
+
+
+
 # GUI Setup
 root = tk.Tk()
 root.title("Meepo Auto Serial Number Scan System")
@@ -245,6 +316,11 @@ root.bind('<space>', on_spacebar)
 
 ###
 capture_and_process_frame()
+# Start OCR background thread
+Thread(target=ocr_processing, daemon=True).start()
+#autostart
+if autostart:
+    toggle_thread()
 
 # Start GUI video update loop
 update_video()
