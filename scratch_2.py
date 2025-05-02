@@ -36,6 +36,7 @@ current_frame = None  # Shared between threads
 ocr_queue = queue.Queue()
 # Create a flag to toggle between Original and Processed frames
 use_processed_frame = False  # Default is original frame
+scan_interval = 3
 
 def sharpen(image):
     kernel = np.array([[0, -1, 0],
@@ -61,6 +62,8 @@ def preprocess_for_ocr(frame):
     binary = binarize(contrast)
     return binary
 
+
+
 def update_status():
     if blink_state:
         status_var.set("🟢 Running")
@@ -84,11 +87,6 @@ def toggle_thread():
         stop_event.clear()
         Thread(target=background_task, daemon=True).start()
         start_button.config(text="Stop")
-
-def toggle_frame():
-    global use_processed_frame
-    use_processed_frame = not use_processed_frame
-    toggle_button.config(text="Use Processed Frame" if not use_processed_frame else "Use Original Frame")
 
 def toggle_mode():
     global check_type
@@ -242,9 +240,6 @@ mode_button.pack(side="left", padx=10)
 start_button = tk.Button(button_frame, text="Start", width=10, command=toggle_thread,
                          bg="black", fg="green", font=("Helvetica", 12, "bold"))
 start_button.pack(side="left", padx=10)
-
-toggle_frame_button = tk.Button(button_frame, text="Use Processed Frame", command=toggle_frame, bg="black", fg="green", font=("Helvetica", 12, "bold"))
-toggle_frame_button.pack(side='left', padx=10, pady=10)  # Align button to the left
 
 # ---- Video Display ----
 video_label = tk.Label(root, bg="#2e3b4e")
