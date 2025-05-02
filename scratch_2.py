@@ -48,7 +48,7 @@ def toggle_mode():
         status_var.set("🔴 Stopped")
     check_type = not check_type
     mode_var.set("Mode: iCloud-MDM" if check_type else "Mode: Basic")
-
+    mode_label.config(fg="red" if check_type else "green")
 
 def on_spacebar(event=None):
     toggle_thread()
