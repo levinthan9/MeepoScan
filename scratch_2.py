@@ -33,7 +33,7 @@ mode_var = None
 current_frame = None  # Shared between threads
 original_frame = None
 # Create a queue to hold processed frames
-ocr_queue = queue.Queue()
+frame_queue = queue.Queue()
 # =============================== CONFIG ===============================
 use_processed_frame = False  # Default is original frame
 scan_interval = 3
@@ -103,8 +103,9 @@ def on_spacebar(event=None):
 
 
 def update_video():
-    global current_frame
+    global current_frame,original_frame
     if current_frame is not None:
+        original_frame = current_frame.copy()
         # Convert to RGB, then ImageTk
         img = cv2.cvtColor(current_frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(img)
@@ -117,11 +118,10 @@ def update_video():
 
 
 def capture_and_process_frame():
-    global use_processed_frame
-    print("1")
+    global use_processed_frame,original_frame
     if original_frame is None:
         return  # No frame yet
-    print("2")
+        print("None")
     # Coordinates for cropping (adjust as necessary for your rectangle)
     x, y, w, h = 100, 100, 300, 200  # Example rectangle
     cropped_frame = original_frame[y:y+h, x:x+w]  # Crop the rectangle
@@ -129,15 +129,16 @@ def capture_and_process_frame():
     # If processed frame is selected, preprocess the frame
     if use_processed_frame:
         processed_frame = preprocess_for_ocr(cropped_frame)
-        ocr_queue.put(processed_frame)  # Put the processed frame into the queue
+        frame_queue.put(processed_frame)  # Put the processed frame into the queue
     else:
-        ocr_queue.put(cropped_frame)  # Put the original frame into the queue
-    print("3")
+        frame_queue.put(cropped_frame)  # Put the original frame into the queue
     # Call this function again after 1 second
     root.after(1000, capture_and_process_frame)
 
+def ocr_processing():
+    print("1")
 def background_task():
-    global thread_running, current_frame, original_frame
+    global thread_running, current_frame
     thread_running = True
     update_status()
 
@@ -156,7 +157,6 @@ def background_task():
         if not ret:
             number_var.set("Camera Read Fail")
             break
-        original_frame = frame.copy()
         number_var.set(f"Serial: {serial}")
         status_text_core = "Checking For iCloud and MDM Lock" if check_type else "Checking Spec Only"
         status_text = f"^^^^^^  {status_text_core}  ^^^^^^"
