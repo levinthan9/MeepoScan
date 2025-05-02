@@ -31,7 +31,7 @@ status_var = None
 number_var = None
 mode_var = None
 current_frame = None  # Shared between threads
-
+original_frame = None
 # Create a queue to hold processed frames
 ocr_queue = queue.Queue()
 # =============================== CONFIG ===============================
@@ -118,15 +118,13 @@ def update_video():
 
 def capture_and_process_frame():
     global use_processed_frame
-
+    print("1")
+    if original_frame is None:
+        return  # No frame yet
+    print("2")
     # Coordinates for cropping (adjust as necessary for your rectangle)
     x, y, w, h = 100, 100, 300, 200  # Example rectangle
-
-    ret, frame = cap.read()  # Capture frame
-    if not ret:
-        return
-
-    cropped_frame = frame[y:y+h, x:x+w]  # Crop the rectangle
+    cropped_frame = original_frame[y:y+h, x:x+w]  # Crop the rectangle
 
     # If processed frame is selected, preprocess the frame
     if use_processed_frame:
@@ -134,15 +132,12 @@ def capture_and_process_frame():
         ocr_queue.put(processed_frame)  # Put the processed frame into the queue
     else:
         ocr_queue.put(cropped_frame)  # Put the original frame into the queue
-
+    print("3")
     # Call this function again after 1 second
     root.after(1000, capture_and_process_frame)
 
-
-# Call capture_and_process_frames when the process starts
-
 def background_task():
-    global thread_running, current_frame
+    global thread_running, current_frame, original_frame
     thread_running = True
     update_status()
 
@@ -161,7 +156,7 @@ def background_task():
         if not ret:
             number_var.set("Camera Read Fail")
             break
-
+        original_frame = frame.copy()
         number_var.set(f"Serial: {serial}")
         status_text_core = "Checking For iCloud and MDM Lock" if check_type else "Checking Spec Only"
         status_text = f"^^^^^^  {status_text_core}  ^^^^^^"
@@ -212,7 +207,7 @@ root.attributes('-topmost', True)
 root.after(1, root.lift)
 
 status_var = tk.StringVar(value="🔴 Stopped")
-number_var = tk.StringVar(value="Number: ---")
+number_var = tk.StringVar(value="")
 mode_var = tk.StringVar(value="Mode: Basic")
 
 # ---- Top Row ----
@@ -248,8 +243,11 @@ video_label.pack(pady=10)
 # Bind spacebar
 root.bind('<space>', on_spacebar)
 
+###
+capture_and_process_frame()
+
 # Start GUI video update loop
 update_video()
-
 root.mainloop()
+
 
