@@ -1,8 +1,26 @@
-import tkinter as tk
-from threading import Thread, Event
-import time
 import cv2
+import datetime
+import easyocr
+import numpy as np
+import os
+import pytesseract
+import queue
+import re
+import subprocess
+import tempfile
+import time
+import tkinter as tk
+
+from bs4 import BeautifulSoup
+from collections import Counter
+from datetime import datetime
 from PIL import Image, ImageTk
+from queue import Queue
+from subprocess import run
+from threading import Thread
+from threading import Thread, Event
+from tkinter import messagebox
+from tkinter import simpledialog
 
 stop_event = Event()
 thread_running = False
