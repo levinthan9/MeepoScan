@@ -32,6 +32,8 @@ current_frame = None  # Shared between threads
 original_frame = None
 manual_window = None
 serial = ""
+processed_frame_count = 0
+frame_queue_length = 0
 
 # Create a queue to hold processed frames
 frame_queue = queue.Queue()
@@ -151,14 +153,12 @@ def spec_check(serial):
 
     with open(temp_html, "r") as f:
         soup = BeautifulSoup(f.read(), "html.parser")
-
     block = soup.select_one("div.about-your-mac-box")
     if not block:
         #messagebox.showerror("Error", f"Could not find info for serial: {serial}")
         print(f"\033[91mCould not find info for serial: {serial}\033[0m")
 
         return None
-
     def extract(label):
         el = block.find("span", string=label)
         return el.find_next("span").text if el else ""
@@ -171,15 +171,16 @@ def spec_check(serial):
     )
 
 #def generate_label(serial, amodel, emc, cpu, gpu, ram, ssd, icloud, mdm, config):
-def generate_label(serial, cpu, gpu, ram, ssd, icloud, mdm, config):
+def generate_label(serial, cpu, gpu, ram, ssd, icloud, mdm, config, model_name):
     html = f"""<!DOCTYPE html>
 <html><head><style>
   @page {{ margin: 0mm; size: 4in 1in; }}
   body {{ font-size: 12px; }}
 </style></head>
 <body><div style='text-align: center;'>
-{serial} {" iCloud " + icloud + " MDM " + mdm if icloud or mdm else ""}
-{"<br>" + config if icloud or mdm else ""}
+{serial} {" iCloud " + icloud if icloud else ""}  {" MDM " + mdm if mdm else ""}
+{"<br>" + config if config else ""}
+{"<br>" + model_name if model_name else ""}
 <br>{cpu} {gpu} {ram} {ssd}
 </div></body></html>"""
 
@@ -212,26 +213,67 @@ def log_event(message):
         f.write(f"{timestamp} {message}\n")
 
 def icloudCheck(serial):
-    api_url = f"https://sickw.com/api.php?format=json&key=75K-GL0-CWP-WMG-U3M-NXF-CHH-VHS&imei={serial}&service=72"
+    import re
+    import json
+
+    api_url = f"https://sickw.com/api.php?format=json&key=75K-GL0-CWP-WMG-U3M-NXF-CHH-VHS&imei={serial}&service=26"
+
+    # Initialize default values
+    icloud = ""
+    mdm = ""
+    config = ""
+    model_name = ""
+    response_code = "Unknown"  # Default value for response code
+
     try:
-        response = runcommand(f"curl -s -k --connect-timeout 60 --max-time 60 '{api_url}'")
-        raw_result = runcommand(f"echo {response!r} | /opt/homebrew/bin/jq -r .result")
-        config = runcommand(f"echo {raw_result!r} | grep -oE 'Device Configuration: [^<]+' | sed 's/Device Configuration: //'")
-        mdm = runcommand(f"echo {raw_result!r} | grep -oE 'MDM Lock: <font[^>]*>[^<]+' | sed -E 's/.*>([^<]+)$/\\1/'")
-        icloud = runcommand(f"echo {raw_result!r} | grep -oE 'iCloud Lock: <font[^>]*>[^<]+' | sed -E 's/.*>([^<]+)$/\\1/'")
+        # Use curl to fetch the API response and include -w '%{http_code}' to log the status code
+        curl_command = f"curl -s -k -w '%{{http_code}}' --connect-timeout 60 --max-time 60 '{api_url}'"
+        response = runcommand(curl_command)
 
-        log_event(f"Full Check: {serial} | Config: {config}")
-        log_event(f"Response: {response}")
-        messagebox.showinfo("Device Info", f"Device Configuration: {config}\nMDM Lock: {mdm}\niCloud Lock: {icloud}")
+        # Separate the HTTP status code from the response content
+        response_code = response[-3:]  # Last three characters are the HTTP status code
+        response_body = response[:-3]  # All characters before the status code
 
-    except subprocess.CalledProcessError:
-        log_event(f"IMEI {serial} - API call failed.")
-        messagebox.showerror("Error", f"API call failed for {serial}")
-    return(icloud,mdm,config)
+        # Log the response code
+        log_event(f"HTTP Response Code: {response_code}")
 
+        # Parse response JSON
+        response_data = json.loads(response_body)
 
+        # Extract raw result HTML from the `result` field
+        raw_result = response_data.get("result", "")
 
+        # Extract Model Name using regex search
+        model_name_match = re.search(r"Model Name:\s*([^<]+)<br \/>", raw_result)
+        if model_name_match:
+            model_name = model_name_match.group(1).strip()
 
+        # Extract configurations and other values (if needed)
+        config_match = re.search(r"Device Configuration:\s*([^<]+)", raw_result)
+        if config_match:
+            config = config_match.group(1).strip()
+
+        mdm_match = re.search(r"MDM Lock:\s*<font[^>]*>([^<]+)</font>", raw_result)
+        if mdm_match:
+            mdm = mdm_match.group(1).strip()
+
+        icloud_match = re.search(r"iCloud Lock:\s*<font[^>]*>([^<]+)</font>", raw_result)
+        if icloud_match:
+            icloud = icloud_match.group(1).strip()
+
+        # Log the extracted Model Name and other values
+        log_event(
+            f"Full Check: {serial} | Model Name: {model_name} | Config: {config} | Response Code: {response_code}")
+        log_event(f"Response: {response_body}")
+        messagebox.showinfo("Device Info",
+                            f"Model Name: {model_name}\nDevice Configuration: {config}\nMDM Lock: {mdm}\niCloud Lock: {icloud}\nHTTP Response: {response_code}")
+
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+        log_event(f"IMEI {serial} - API call failed with error: {e}")
+        messagebox.showerror("Error", f"API call failed for {serial}: {e}")
+
+    # Return the extracted information
+    return icloud, mdm, config, model_name
 
 
 def clean_common_ocr_errors(text):
@@ -264,11 +306,8 @@ def update_video():
 
 
 def capture_and_process_frame():
-    global use_processed_frame,autocrop,original_frame
-    if original_frame is None:
-        print("None")
-        # No frame yet
-    else:
+    global use_processed_frame, autocrop, original_frame
+    if original_frame is not None:
         # Coordinates for cropping (adjust as necessary for your rectangle)
         if autocrop:
             x, y, w, h = 100, 100, 300, 200  # Example rectangle
@@ -282,9 +321,26 @@ def capture_and_process_frame():
         else:
             frame_queue.put(final_frame)  # Put the original frame into the queue
         # Call this function again after 1 second
-    root.after(100, capture_and_process_frame)
+    root.after(250, capture_and_process_frame)
 
-def main_check(serial):
+
+def update_processed_frames():
+    """Updates the processing_frame and frame_queue_length labels in the top-right frame."""
+    global processed_frame_count, frame_queue_length
+    # Increment processed frames and get queue size
+    frame_queue_length = frame_queue.qsize()
+
+
+    # Update the UI labels dynamically
+    right_label_second_row.config(text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}", anchor="e")
+
+    # Schedule the next update (if desired)
+    top_frame.after(100, update_processed_frames)  # Update every 100 ms
+
+
+
+def main_check(serial,bypass):
+    global processed_frame_count
     if serial:
         if is_duplicate(serial):
             return
@@ -296,37 +352,45 @@ def main_check(serial):
         #    emc = clean_common_ocr_errors(emc)
         print("Checking Spec")
         specs = spec_check(serial)
-        if specs:
+        if specs or bypass:
             cpu, gpu, ram, ssd = specs
-            if cpu:
+            if cpu or bypass:
+                processed_frame_count = 0
+                right_label_second_row.config(text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}", anchor="e")
+                print(f"Found CPU: {cpu}")
                 if check_type:
                     icloudInfo = icloudCheck(serial)
                     if icloudInfo:
-                        icloud, mdm, config = icloudInfo
+                        icloud, mdm, config, model_name = icloudInfo
                         #log_event(f"iCloud MDM Check: {serial} | Amodel: {amodel} | EMC: {emc} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} "
                         log_event(f"iCloud MDM Check: {serial} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} ")
                 else:
                     icloud = None
                     mdm = None
                     config = None
+                    model_name = None
                     #log_event(f"Spec Check: {serial} | Amodel: {amodel} | EMC: {emc} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}")
                     log_event(f"Spec Check: {serial} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}")
                 #generate_label(serial, amodel, emc, cpu, gpu, ram, ssd, icloud, mdm, config)
-                generate_label(serial, cpu, gpu, ram, ssd, icloud, mdm, config)
+                generate_label(serial, cpu, gpu, ram, ssd, icloud, mdm, config, model_name)
+            else:
+                print("No CPU Info Found")
         else:
+            print("")
             open_manual_window()
 
 def ocr_processing():
     if stop_event.is_set():
         return
-    global ocr_mode,serial
+    global ocr_mode, serial, processed_frame_count
     while True:
         texts = []
         start_time = time.time()
-        while time.time() - start_time < scan_interval:
-            #print(f"Frame queue size: {frame_queue.qsize()}")
+        frame_queue_length = frame_queue.qsize()
+        while time.time() - start_time < scan_interval and frame_queue_length >= 1:
             try:
                 processing_frame = frame_queue.get(timeout=1)
+                processed_frame_count +=1
             except queue.Empty:
                 #print("Queue is empty, exiting loop.")
                 break
@@ -341,7 +405,7 @@ def ocr_processing():
                 texts.append(result)
 
             #print(result)
-        print(texts)
+        #print(texts)
         serials, amodels, emcs = extract_matches(texts)
         serial = most_common(serials)
         #serial = "C1MQCSVH0TY3"
@@ -349,7 +413,7 @@ def ocr_processing():
         #emc = most_common(emcs)
         #print("checking for serial number")
         if serial:
-            main_check(serial)
+            main_check(serial,False)
     frame_queue.task_done()
 
 def background_task():
@@ -452,7 +516,13 @@ def open_manual_window():
     def submit_serial():
         global serial
         serial = serial_entry.get()  # Update the global serial value
-        main_check(serial)  # Call maincheck with the updated serial
+        main_check(serial,False)  # Call maincheck with the updated serial
+        manual_window.destroy()  # Close the window
+        root.attributes('-topmost', True)  # Restore root to always be on top
+    def submit_serial_bypass():
+        global serial
+        serial = serial_entry.get()  # Update the global serial value
+        main_check(serial,True)  # Call maincheck with the updated serial
         manual_window.destroy()  # Close the window
         root.attributes('-topmost', True)  # Restore root to always be on top
     def on_manual_window_close():
@@ -465,6 +535,10 @@ def open_manual_window():
     # Place the "Check" button
     check_button = tk.Button(manual_window, text="Check", command=submit_serial)
     check_button.grid(row=1, column=1, pady=10, sticky="e")
+
+    # Place the "Bypass Check" button
+    check_button_bypass = tk.Button(manual_window, text="Bypass Check", command=submit_serial_bypass)
+    check_button_bypass.grid(row=1, column=2, pady=10, sticky="e")
 
     # Bind the Enter key to the submit_serial function
     manual_window.bind('<Return>', lambda event: submit_serial())
@@ -508,7 +582,8 @@ number_label.pack(pady=5)
 right_label = Label(top_frame, text=f"Interval: {scan_interval}   Filter: {use_processed_frame}   OCR: {ocr_mode}", anchor="e")
 right_label.pack(anchor="e")
 
-
+right_label_second_row = Label(top_frame, text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}", anchor="e")
+right_label_second_row.pack(anchor="e")
 
 # ---- Button Row ----
 button_frame = tk.Frame(root, bg="#2e3b4e")
@@ -537,6 +612,8 @@ root.bind('<Down>', lambda event: open_manual_window())
 
 ###
 capture_and_process_frame()
+update_processed_frames()
+
 # Start OCR background thread
 Thread(target=ocr_processing, daemon=True).start()
 #autostart
@@ -547,7 +624,7 @@ image_path = "/Users/tn/Desktop/s234.jpg"  # Replace <your-username> with your s
 image = cv2.imread(image_path)
 if image is not None:
     print(f"Image loaded successfully: {image_path}")
-    frame_queue.put(image)  # Add the image to the frame queue
+    #frame_queue.put(image)  # Add the image to the frame queue
 
 
 # Start GUI video update loop
