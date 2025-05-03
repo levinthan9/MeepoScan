@@ -42,7 +42,7 @@ reader = easyocr.Reader(['en'])
 
 # Global paths
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PRINTER_NAME = "Arkscan-2054K-LAN"
+PRINTER_NAME = "4BARCODE"
 TEMP_DIR = tempfile.gettempdir()
 
 # Time to wait before allowing the same match again (in seconds)
@@ -142,8 +142,8 @@ def on_spacebar(event=None):
 def runcommand(cmd):
     return subprocess.check_output(cmd, shell=True, text=True).strip()
 
-def spec_check(serial):
-    url = f"https://macfinder.co.uk/model/macbook-pro-15-inch-2018/?serial={serial}"
+def spec_check(serial_number):
+    url = f"https://macfinder.co.uk/model/macbook-pro-15-inch-2018/?serial={serial_number}"
     temp_html = os.path.join(TEMP_DIR, "mac_info.html")
     try:
         runcommand(f"curl --fail --silent {url!r} -o {temp_html}")
@@ -156,7 +156,7 @@ def spec_check(serial):
     block = soup.select_one("div.about-your-mac-box")
     if not block:
         #messagebox.showerror("Error", f"Could not find info for serial: {serial}")
-        print(f"\033[91mCould not find info for serial: {serial}\033[0m")
+        print(f"\033[91mCould not find info for serial: {serial_number}\033[0m")
 
         return None
     def extract(label):
@@ -171,21 +171,21 @@ def spec_check(serial):
     )
 
 #def generate_label(serial, amodel, emc, cpu, gpu, ram, ssd, icloud, mdm, config):
-def generate_label(serial, cpu, gpu, ram, ssd, icloud, mdm, config, model_name):
+def generate_label(serial_number, cpu, gpu, ram, ssd, icloud, mdm, config, model_name):
     html = f"""<!DOCTYPE html>
 <html><head><style>
   @page {{ margin: 0mm; size: 4in 1in; }}
   body {{ font-size: 12px; }}
 </style></head>
 <body><div style='text-align: center;'>
-{serial} {" iCloud " + icloud if icloud else ""}  {" MDM " + mdm if mdm else ""}
+{serial_number} {" iCloud " + icloud if icloud else ""}  {" MDM " + mdm if mdm else ""}
 {"<br>" + config if config else ""}
 {"<br>" + model_name if model_name else ""}
 <br>{cpu} {gpu} {ram} {ssd}
 </div></body></html>"""
 
-    html_path = os.path.join(os.path.expanduser("~/Documents"), f"{serial}.html")
-    pdf_path = os.path.join(os.path.expanduser("~/Documents"), f"{serial}.pdf")
+    html_path = os.path.join(os.path.expanduser("~/Documents"), f"{serial_number}.html")
+    pdf_path = os.path.join(os.path.expanduser("~/Documents"), f"{serial_number}.pdf")
 
     with open(html_path, "w") as f:
         f.write(html)
@@ -212,11 +212,11 @@ def log_event(message):
     with open(log_file, "a") as f:
         f.write(f"{timestamp} {message}\n")
 
-def icloudCheck(serial):
+def icloudCheck(serial_number):
     import re
     import json
 
-    api_url = f"https://sickw.com/api.php?format=json&key=75K-GL0-CWP-WMG-U3M-NXF-CHH-VHS&imei={serial}&service=26"
+    api_url = f"https://sickw.com/api.php?format=json&key=75K-GL0-CWP-WMG-U3M-NXF-CHH-VHS&imei={serial_number}&service=26"
 
     # Initialize default values
     icloud = ""
@@ -263,14 +263,14 @@ def icloudCheck(serial):
 
         # Log the extracted Model Name and other values
         log_event(
-            f"Full Check: {serial} | Model Name: {model_name} | Config: {config} | Response Code: {response_code}")
+            f"Full Check: {serial_number} | Model Name: {model_name} | Config: {config} | Response Code: {response_code}")
         log_event(f"Response: {response_body}")
         messagebox.showinfo("Device Info",
                             f"Model Name: {model_name}\nDevice Configuration: {config}\nMDM Lock: {mdm}\niCloud Lock: {icloud}\nHTTP Response: {response_code}")
 
     except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
-        log_event(f"IMEI {serial} - API call failed with error: {e}")
-        messagebox.showerror("Error", f"API call failed for {serial}: {e}")
+        log_event(f"IMEI {serial_number} - API call failed with error: {e}")
+        messagebox.showerror("Error", f"API call failed for {serial_number}: {e}")
 
     # Return the extracted information
     return icloud, mdm, config, model_name
@@ -339,40 +339,47 @@ def update_processed_frames():
 
 
 
-def main_check(serial,bypass):
-    global processed_frame_count
-    if serial:
-        if is_duplicate(serial):
+def main_check(serial_number,bypass):
+    global processed_frame_count, serial
+    if serial_number:
+        if is_duplicate(serial_number):
             return
-        serial = clean_common_ocr_errors(serial)
-        print(f"\033[92mFound Serial Number: {serial}\033[0m")
+        serial_number = clean_common_ocr_errors(serial_number)
+        print(f"\033[92mFound Serial Number: {serial_number}\033[0m")
+        serial = serial_number
+        while not frame_queue.empty():
+            try:
+                frame_queue.get_nowait()  # Remove each item in a thread-safe way
+            except Empty:
+                break
+        processed_frame_count = 0
+        right_label_second_row.config(
+            text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}", anchor="e")
         #if amodel:
         #    amodel = clean_common_ocr_errors(amodel)
         #if emc:
         #    emc = clean_common_ocr_errors(emc)
         print("Checking Spec")
-        specs = spec_check(serial)
+        specs = spec_check(serial_number)
         if specs or bypass:
             cpu, gpu, ram, ssd = specs
             if cpu or bypass:
-                processed_frame_count = 0
-                right_label_second_row.config(text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}", anchor="e")
                 print(f"Found CPU: {cpu}")
                 if check_type:
-                    icloudInfo = icloudCheck(serial)
+                    icloudInfo = icloudCheck(serial_number)
                     if icloudInfo:
                         icloud, mdm, config, model_name = icloudInfo
                         #log_event(f"iCloud MDM Check: {serial} | Amodel: {amodel} | EMC: {emc} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} "
-                        log_event(f"iCloud MDM Check: {serial} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} ")
+                        log_event(f"iCloud MDM Check: {serial_number} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} ")
                 else:
                     icloud = None
                     mdm = None
                     config = None
                     model_name = None
                     #log_event(f"Spec Check: {serial} | Amodel: {amodel} | EMC: {emc} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}")
-                    log_event(f"Spec Check: {serial} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}")
+                    log_event(f"Spec Check: {serial_number} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}")
                 #generate_label(serial, amodel, emc, cpu, gpu, ram, ssd, icloud, mdm, config)
-                generate_label(serial, cpu, gpu, ram, ssd, icloud, mdm, config, model_name)
+                generate_label(serial_number, cpu, gpu, ram, ssd, icloud, mdm, config, model_name)
             else:
                 print("No CPU Info Found")
         else:
@@ -623,8 +630,9 @@ if autostart:
 image_path = "/Users/tn/Desktop/s234.jpg"  # Replace <your-username> with your system username
 image = cv2.imread(image_path)
 if image is not None:
+    #time.sleep(3)
     print(f"Image loaded successfully: {image_path}")
-    #frame_queue.put(image)  # Add the image to the frame queue
+    frame_queue.put(image)  # Add the image to the frame queue
 
 
 # Start GUI video update loop
