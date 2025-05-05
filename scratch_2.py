@@ -1,9 +1,10 @@
 import cv2
 import datetime
-import easyocr
+#import easyocr
 import numpy as np
 import os
 import pytesseract
+#pytesseract.pytesseract.tesseract_cmd = "/Users/meeposcan/PycharmProjects/MeepoScan/.venv/lib/python3.12/site-packages/tesseract"
 import queue
 import re
 import subprocess
@@ -38,7 +39,7 @@ frame_queue_length = 0
 # Create a queue to hold processed frames
 frame_queue = queue.Queue()
 # Initialize EasyOCR reader
-reader = easyocr.Reader(['en'])
+#reader = easyocr.Reader(['en'])
 
 # Global paths
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -407,12 +408,12 @@ def ocr_processing():
                 result = reader.readtext(processing_frame, detail=0)
                 texts.extend(result)
             else:
-                #result = pytesseract.image_to_string(processing_frame, lang='eng', config='--psm 6')
-                result = pytesseract.image_to_string(processing_frame)
+                result = pytesseract.image_to_string(processing_frame, lang='eng', config='--psm 6')
+                #result = pytesseract.image_to_string(processing_frame)
                 texts.append(result)
 
             #print(result)
-        #print(texts)
+        print(texts)
         serials, amodels, emcs = extract_matches(texts)
         serial = most_common(serials)
         #serial = "C1MQCSVH0TY3"
@@ -439,6 +440,7 @@ def background_task():
 
     while not stop_event.is_set():
         ret, frame = cap.read()
+        frame = cv2.flip(frame, -1)
         if not ret:
             number_var.set("Camera Read Fail")
             break
@@ -627,12 +629,12 @@ Thread(target=ocr_processing, daemon=True).start()
 if autostart:
     toggle_thread()
 
-image_path = "/Users/tn/Desktop/s234.jpg"  # Replace <your-username> with your system username
-image = cv2.imread(image_path)
-if image is not None:
+#image_path = "/Users/tn/Desktop/s234.jpg"  # Replace <your-username> with your system username
+#image = cv2.imread(image_path)
+#if image is not None:
     #time.sleep(3)
-    print(f"Image loaded successfully: {image_path}")
-    frame_queue.put(image)  # Add the image to the frame queue
+    #print(f"Image loaded successfully: {image_path}")
+    #frame_queue.put(image)  # Add the image to the frame queue
 
 
 # Start GUI video update loop
