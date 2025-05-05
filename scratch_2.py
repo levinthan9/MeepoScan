@@ -408,7 +408,7 @@ def ocr_processing():
                 result = reader.readtext(processing_frame, detail=0)
                 texts.extend(result)
             else:
-                result = pytesseract.image_to_string(processing_frame, lang='eng', config='--psm 6')
+                result = pytesseract.image_to_string(processing_frame, lang='eng', config='--psm 1')
                 #result = pytesseract.image_to_string(processing_frame)
                 texts.append(result)
 
