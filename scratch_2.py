@@ -55,7 +55,7 @@ autostart = True
 autocrop = False
 roi_x, roi_y, roi_w, roi_h = 600, 100, 800, 300  # crop area
 scan_interval = 3
-use_processed_frame = False  # Default is original frame
+use_processed_frame = True  # Default is original frame
 ocr_mode = "pytesseract" #easyocr or pytesseract
 
 # Regex patterns
@@ -69,18 +69,11 @@ emc_pattern = re.compile(r'\bEMC\s(\d{4})\b')
 
 
 
-
-
-
-
-
-
 def sharpen(image):
     kernel = np.array([[0, -1, 0],
                        [-1, 5, -1],
                        [0, -1, 0]])
     return cv2.filter2D(image, -1, kernel)
-
 
 def enhance_contrast(image):
     return cv2.equalizeHist(image)
@@ -92,13 +85,21 @@ def binarize(image):
                                  cv2.THRESH_BINARY, 11, 2)
 
 
+
+def denoise(image):
+    return cv2.fastNlMeansDenoising(image, None, 30, 7, 21)
+
+def resize_for_ocr(image, factor=2):
+    return cv2.resize(image, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
+
 def preprocess_for_ocr(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    sharp = sharpen(gray)
-    contrast = enhance_contrast(sharp)
+    resized = resize_for_ocr(gray)
+    sharpened = sharpen(resized)
+    denoised = denoise(sharpened)
+    contrast = enhance_contrast(denoised)
     binary = binarize(contrast)
     return binary
-
 
 
 def update_status():
@@ -322,7 +323,7 @@ def capture_and_process_frame():
         else:
             frame_queue.put(final_frame)  # Put the original frame into the queue
         # Call this function again after 1 second
-    root.after(250, capture_and_process_frame)
+    root.after(1000, capture_and_process_frame)
 
 
 def update_processed_frames():
@@ -397,7 +398,7 @@ def ocr_processing():
         frame_queue_length = frame_queue.qsize()
         while time.time() - start_time < scan_interval and frame_queue_length >= 1:
             try:
-                processing_frame = frame_queue.get(timeout=1)
+                processing_frame = frame_queue.get(timeout=5)
                 processed_frame_count +=1
             except queue.Empty:
                 #print("Queue is empty, exiting loop.")
@@ -408,12 +409,13 @@ def ocr_processing():
                 result = reader.readtext(processing_frame, detail=0)
                 texts.extend(result)
             else:
-                #result = pytesseract.image_to_string(processing_frame, lang='eng', config='--psm 1')
-                result = pytesseract.image_to_string(processing_frame)
+                result = pytesseract.image_to_string(processing_frame, lang='eng', config='--psm 1')
+                #result = pytesseract.text(processing_frame)
                 texts.append(result)
 
             #print(result)
-        print(texts)
+        if texts:
+            print(texts)
         serials, amodels, emcs = extract_matches(texts)
         serial = most_common(serials)
         #serial = "C1MQCSVH0TY3"
@@ -422,10 +424,11 @@ def ocr_processing():
         #print("checking for serial number")
         if serial:
             main_check(serial,False)
+        time.sleep(0.5)
     frame_queue.task_done()
 
 def background_task():
-    global thread_running, current_frame, original_frame, serial
+    global thread_running, current_frame, original_frame, serial , processing_frame
     thread_running = True
     update_status()
 
@@ -478,7 +481,7 @@ def background_task():
         cv2.putText(frame, serial, (serial_x, serial_y), cv2.FONT_HERSHEY_SIMPLEX, serial_scale, (255, 255, 0),
                     serial_thickness, cv2.LINE_AA)
 
-        current_frame = frame.copy()
+        current_frame = processing_frame.copy()
         time.sleep(0.03)
 
     cap.release()
@@ -629,12 +632,12 @@ Thread(target=ocr_processing, daemon=True).start()
 if autostart:
     toggle_thread()
 
-image_path = "/Users/meeposcan/Desktop/s234.png"  # Replace <your-username> with your system username
-image = cv2.imread(image_path)
-if image is not None:
-    time.sleep(1)
-    print(f"Image loaded successfully: {image_path}")
-    frame_queue.put(image)  # Add the image to the frame queue
+#image_path = "/Users/meeposcan/Desktop/s234.jpg"  # Replace <your-username> with your system username
+#image = cv2.imread(image_path)
+#if image is not None:
+#    time.sleep(1)
+#    print(f"Image loaded successfully: {image_path}")
+#    frame_queue.put(image)  # Add the image to the frame queue
 
 
 # Start GUI video update loop
