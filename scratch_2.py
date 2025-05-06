@@ -408,8 +408,8 @@ def ocr_processing():
                 result = reader.readtext(processing_frame, detail=0)
                 texts.extend(result)
             else:
-                result = pytesseract.image_to_string(processing_frame, lang='eng', config='--psm 1')
-                #result = pytesseract.image_to_string(processing_frame)
+                #result = pytesseract.image_to_string(processing_frame, lang='eng', config='--psm 1')
+                result = pytesseract.image_to_string(processing_frame)
                 texts.append(result)
 
             #print(result)
@@ -629,12 +629,12 @@ Thread(target=ocr_processing, daemon=True).start()
 if autostart:
     toggle_thread()
 
-#image_path = "/Users/tn/Desktop/s234.jpg"  # Replace <your-username> with your system username
-#image = cv2.imread(image_path)
-#if image is not None:
-    #time.sleep(3)
-    #print(f"Image loaded successfully: {image_path}")
-    #frame_queue.put(image)  # Add the image to the frame queue
+image_path = "/Users/meeposcan/Desktop/s234.png"  # Replace <your-username> with your system username
+image = cv2.imread(image_path)
+if image is not None:
+    time.sleep(1)
+    print(f"Image loaded successfully: {image_path}")
+    frame_queue.put(image)  # Add the image to the frame queue
 
 
 # Start GUI video update loop
