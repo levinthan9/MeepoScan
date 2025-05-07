@@ -53,6 +53,10 @@ recent_matches = {}
 # =============================== CONFIG ===============================
 autostart = True
 autocrop = False
+
+# Initialize the flip state
+flip_active = False
+
 roi_x, roi_y, roi_w, roi_h = 600, 100, 800, 300  # crop area
 scan_interval = 5
 use_processed_frame = True  # Default is original frame
@@ -368,11 +372,12 @@ def main_check(serial_number,bypass):
 
 
 def stop_and_review():
-    global thread_running
+    global thread_running,processed_frame_count
     # Store the previous thread state and stop the thread if it's running
-    if thread_running:
-        toggle_thread()  # This will stop the thread
+    #if thread_running:
+    toggle_thread()  # This will stop the thread
     ocr_processing_event.set()  # Stop OCR processing
+    processed_frame_count = 0
     while not frame_queue.empty():
         try:
             frame_queue.get_nowait()  # Remove each item in a thread-safe way
@@ -425,7 +430,7 @@ def ocr_processing():
         #print("checking for serial number")
         if serial:
             main_check(serial,False)
-        time.sleep(0.5)
+        time.sleep(0.05)
     #frame_queue.task_done()
 
 def background_task():
@@ -444,7 +449,9 @@ def background_task():
 
     while not stop_event.is_set():
         ret, frame = cap.read()
-        frame = cv2.flip(frame, -1)
+        # Apply flip if the state is active
+        if flip_active:
+            frame = cv2.flip(frame, -1)
         if not ret:
             number_var.set("Camera Read Fail")
             break
@@ -590,6 +597,11 @@ def create_year_window():
         btn.grid(row=row, column=col, padx=10, pady=5, sticky="nsew")
 
 
+def toggle_flip():
+    global flip_active
+    flip_active = not flip_active
+    # Update the button text based on the flip state
+    flip_button.config(text="FLIP ON" if flip_active else "FLIP OFF")
 
 
 
@@ -641,6 +653,11 @@ start_button.pack(side="left", padx=10)
 
 manual_button = tk.Button(button_frame, text="Manual", command=open_manual_window)
 manual_button.pack(side="left", padx=10)
+
+
+# Create a button for toggling flip
+flip_button = tk.Button(button_frame, text="FLIP OFF", command=toggle_flip, width=10)
+flip_button.pack(side="left", padx=10)
 
 
 # ---- Video Display ----
