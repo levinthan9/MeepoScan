@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup
 from collections import Counter
 from datetime import datetime
 from PIL import Image, ImageTk
-from queue import Queue
+from queue import Queue, Empty
 from subprocess import run
 from threading import Thread, Event
 from tkinter import messagebox, Label, Frame, simpledialog
@@ -29,12 +29,12 @@ check_type = False  # False = Basic, True = iCloud-MDM
 status_var = None
 number_var = None
 mode_var = None
-current_frame = None  # Shared between threads
-original_frame = None
+feed_frame = None  # Shared between threads
 manual_window = None
 serial = ""
 processed_frame_count = 0
 frame_queue_length = 0
+ocr_processing_event = Event()
 
 # Create a queue to hold processed frames
 frame_queue = queue.Queue()
@@ -54,7 +54,7 @@ recent_matches = {}
 autostart = True
 autocrop = False
 roi_x, roi_y, roi_w, roi_h = 600, 100, 800, 300  # crop area
-scan_interval = 3
+scan_interval = 5
 use_processed_frame = True  # Default is original frame
 ocr_mode = "pytesseract" #easyocr or pytesseract
 
@@ -158,7 +158,7 @@ def spec_check(serial_number):
     block = soup.select_one("div.about-your-mac-box")
     if not block:
         #messagebox.showerror("Error", f"Could not find info for serial: {serial}")
-        print(f"\033[91mCould not find info for serial: {serial_number}\033[0m")
+        print(f"\033[91mCould not find info (INVALID serial number) for serial: {serial_number}\033[0m")
 
         return None
     def extract(label):
@@ -193,7 +193,7 @@ def generate_label(serial_number, cpu, gpu, ram, ssd, icloud, mdm, config, model
         f.write(html)
 
     runcommand(f"'{CHROME}' --headless --disable-gpu --no-pdf-header-footer --print-to-pdf='{pdf_path}' '{html_path}'")
-    run(f"lpr -o fit-to-page -o media=Custom.4x1in -p {PRINTER_NAME} '{pdf_path}'", shell=True)
+    run(f"lp -o fit-to-page -o media=Custom.4x1in -p {PRINTER_NAME} '{pdf_path}'", shell=True)
     time.sleep(1)
     #if os.path.exists(pdf_path):
         #os.remove(pdf_path)
@@ -295,50 +295,27 @@ def extract_matches(texts):
     return serials, amodels, emcs
 
 def update_video():
-    global current_frame
-    if current_frame is not None:
+    global feed_frame
+    if feed_frame is not None:
         # Convert to RGB, then ImageTk
-        img = cv2.cvtColor(current_frame, cv2.COLOR_BGR2RGB)
+        img = cv2.cvtColor(feed_frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(img)
         imgtk = ImageTk.PhotoImage(image=img)
 
         video_label.imgtk = imgtk
         video_label.config(image=imgtk)
-    root.after(10, update_video)
-
-
-def capture_and_process_frame():
-    global use_processed_frame, autocrop, original_frame
-    if original_frame is not None:
-        # Coordinates for cropping (adjust as necessary for your rectangle)
-        if autocrop:
-            x, y, w, h = 100, 100, 300, 200  # Example rectangle
-            final_frame = original_frame[y:y+h, x:x+w]  # Crop the rectangle
-        else:
-            final_frame = original_frame;
-        # If processed frame is selected, preprocess the frame
-        if use_processed_frame:
-            processed_frame = preprocess_for_ocr(final_frame)
-            frame_queue.put(processed_frame)  # Put the processed frame into the queue
-        else:
-            frame_queue.put(final_frame)  # Put the original frame into the queue
-        # Call this function again after 1 second
-    root.after(1000, capture_and_process_frame)
+    root.after(500, update_video)
 
 
 def update_processed_frames():
-    """Updates the processing_frame and frame_queue_length labels in the top-right frame."""
     global processed_frame_count, frame_queue_length
     # Increment processed frames and get queue size
     frame_queue_length = frame_queue.qsize()
-
-
     # Update the UI labels dynamically
     right_label_second_row.config(text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}", anchor="e")
 
     # Schedule the next update (if desired)
-    top_frame.after(100, update_processed_frames)  # Update every 100 ms
-
+    top_frame.after(200, update_processed_frames)  # Update every 100 ms
 
 
 def main_check(serial_number,bypass):
@@ -383,16 +360,40 @@ def main_check(serial_number,bypass):
                 #generate_label(serial, amodel, emc, cpu, gpu, ram, ssd, icloud, mdm, config)
                 generate_label(serial_number, cpu, gpu, ram, ssd, icloud, mdm, config, model_name)
             else:
-                print("No CPU Info Found")
+                print(f"\033[91mCould not find info (VALID serial number) for serial: {serial_number}\033[0m")
+                stop_and_review()
         else:
-            print("")
-            open_manual_window()
+            print(f"\033[91mCould not find info (INVALID serial number) for serial: {serial_number}\033[0m")
+            stop_and_review()
+
+
+def stop_and_review():
+    global thread_running
+    # Store the previous thread state and stop the thread if it's running
+    if thread_running:
+        toggle_thread()  # This will stop the thread
+    ocr_processing_event.set()  # Stop OCR processing
+    while not frame_queue.empty():
+        try:
+            frame_queue.get_nowait()  # Remove each item in a thread-safe way
+        except Empty:
+            break
+    open_manual_window()
+
+def resume_thread():
+    if stop_event.is_set() and (manual_window is None or not manual_window.winfo_exists()):
+        toggle_thread()
+        ocr_processing_event.clear()
+        Thread(target=ocr_processing, daemon=True).start()
+        return
+    root.after(5000, resume_thread)
 
 def ocr_processing():
-    if stop_event.is_set():
-        return
+    print("OCR Processing")
     global ocr_mode, serial, processed_frame_count
-    while True:
+    while not ocr_processing_event.is_set():
+        if stop_event.is_set():
+            break
         texts = []
         start_time = time.time()
         frame_queue_length = frame_queue.qsize()
@@ -425,10 +426,10 @@ def ocr_processing():
         if serial:
             main_check(serial,False)
         time.sleep(0.5)
-    frame_queue.task_done()
+    #frame_queue.task_done()
 
 def background_task():
-    global thread_running, current_frame, original_frame, serial , processing_frame
+    global thread_running, serial, autocrop, feed_frame
     thread_running = True
     update_status()
 
@@ -447,18 +448,26 @@ def background_task():
         if not ret:
             number_var.set("Camera Read Fail")
             break
-        original_frame = frame.copy()
+        # Coordinates for cropping (adjust as necessary for your rectangle)
+        if autocrop:
+            x, y, w, h = 100, 100, 300, 200  # Example rectangle
+            final_frame = frame[y:y + h, x:x + w]  # Crop the rectangle
+        else:
+            final_frame = frame;
+        processed_frame = preprocess_for_ocr(final_frame)
+        frame_queue.put(processed_frame)  # Put the processed frame into the queue
+        feed_frame = frame.copy()
         number_var.set(f"Serial: {serial}")
         status_text_core = "Checking For iCloud and MDM Lock" if check_type else "Checking Spec Only"
         status_text = f"^^^^^^  {status_text_core}  ^^^^^^"
         color = (0, 0, 255) if check_type else (0, 255, 0)
 
-        frame_h, frame_w = frame.shape[:2]
+        frame_h, frame_w = feed_frame.shape[:2]
 
         # Centered top rectangle
         roi_x = (frame_w - roi_w) // 2
         roi_y = 50
-        cv2.rectangle(frame, (roi_x, roi_y), (roi_x + roi_w, roi_y + roi_h), (0, 255, 0), 2)
+        cv2.rectangle(feed_frame, (roi_x, roi_y), (roi_x + roi_w, roi_y + roi_h), (0, 255, 0), 2)
 
         # Helper to center text
         def center_text_x(text, font, scale, thickness):
@@ -470,18 +479,9 @@ def background_task():
         status_thickness = 2
         status_x = center_text_x(status_text, cv2.FONT_HERSHEY_SIMPLEX, status_scale, status_thickness)
         status_y = roi_y + roi_h + 40
-        cv2.putText(frame, status_text, (status_x, status_y), cv2.FONT_HERSHEY_SIMPLEX, status_scale, color,
+        cv2.putText(feed_frame, status_text, (status_x, status_y), cv2.FONT_HERSHEY_SIMPLEX, status_scale, color,
                     status_thickness, cv2.LINE_AA)
 
-        # Serial number (below status line)
-        serial_scale = 1.5
-        serial_thickness = 2
-        serial_x = center_text_x(serial, cv2.FONT_HERSHEY_SIMPLEX, serial_scale, serial_thickness)
-        serial_y = status_y + 50
-        cv2.putText(frame, serial, (serial_x, serial_y), cv2.FONT_HERSHEY_SIMPLEX, serial_scale, (255, 255, 0),
-                    serial_thickness, cv2.LINE_AA)
-
-        current_frame = processing_frame.copy()
         time.sleep(0.03)
 
     cap.release()
@@ -490,7 +490,7 @@ def background_task():
 
 
 def open_manual_window():
-    global serial, manual_window
+    global serial, manual_window, thread_running
     # If a manual_window already exists, destroy it
     if manual_window is not None and manual_window.winfo_exists():
         manual_window.destroy()
@@ -556,6 +556,40 @@ def open_manual_window():
     manual_window.bind('<Return>', lambda event: submit_serial())
 
 
+def create_year_window():
+    year_window = tk.Toplevel(root)
+    year_window.title("Generate Labels by Year")
+    year_window.geometry("500x1000")
+    year_window.resizable(False, False)
+
+    # Calculate number of years (2010 to 2025)
+    years = list(range(2010, 2026))
+    total_years = len(years)
+
+    # Create frame for buttons
+    button_frame = tk.Frame(year_window)
+    button_frame.pack(expand=True, fill='both', padx=20, pady=20)
+
+    # Configure grid with 2 columns
+    button_frame.grid_columnconfigure(0, weight=1)
+    button_frame.grid_columnconfigure(1, weight=1)
+
+    # Create buttons for each year
+    for i, year in enumerate(years):
+        row = i // 2  # Integer division to determine row
+        col = i % 2  # Remainder to determine column (0 or 1)
+
+        # Create button with specific year model
+        btn = tk.Button(
+            button_frame,
+            text=f"MacBook Pro {year}",
+            width=20,
+            height=2,
+            command=lambda y=year: generate_label(None, None, None, None, None, None, None, None, f"MacBook Pro {y}")
+        )
+        btn.grid(row=row, column=col, padx=10, pady=5, sticky="nsew")
+
+
 
 
 
@@ -590,10 +624,6 @@ status_label.pack(side="left", padx=10)
 number_label = tk.Label(root, textvariable=number_var, font=("Helvetica", 28, "bold"), fg="green", bg="#2e3b4e")
 number_label.pack(pady=5)
 
-# Add labels to the top-right frame
-right_label = Label(top_frame, text=f"Interval: {scan_interval}   Filter: {use_processed_frame}   OCR: {ocr_mode}", anchor="e")
-right_label.pack(anchor="e")
-
 right_label_second_row = Label(top_frame, text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}", anchor="e")
 right_label_second_row.pack(anchor="e")
 
@@ -623,10 +653,11 @@ root.bind('<space>', on_spacebar)
 root.bind('<Down>', lambda event: open_manual_window())
 
 ###
-capture_and_process_frame()
 update_processed_frames()
+create_year_window()
 
 # Start OCR background thread
+ocr_processing_event.clear()
 Thread(target=ocr_processing, daemon=True).start()
 #autostart
 if autostart:
@@ -641,6 +672,7 @@ if autostart:
 
 
 # Start GUI video update loop
+resume_thread()
 update_video()
 root.mainloop()
 
