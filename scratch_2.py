@@ -4,7 +4,7 @@ import datetime
 import numpy as np
 import os
 import pytesseract
-#pytesseract.pytesseract.tesseract_cmd = "/Users/meeposcan/PycharmProjects/MeepoScan/.venv/lib/python3.12/site-packages/tesseract"
+pytesseract.pytesseract.tesseract_cmd = "/opt/homebrew/bin/tesseract"
 import queue
 import re
 import subprocess
@@ -31,10 +31,12 @@ number_var = None
 mode_var = None
 feed_frame = None  # Shared between threads
 manual_window = None
+manual_stop = False
 serial = ""
 processed_frame_count = 0
 frame_queue_length = 0
-ocr_processing_event = Event()
+stop_ocr_processing_event = Event()
+
 
 # Create a queue to hold processed frames
 frame_queue = queue.Queue()
@@ -122,12 +124,22 @@ def blink_status():
 
 
 def toggle_thread():
+    #global processed_frame_count
     if thread_running:
         stop_event.set()
+        stop_ocr_processing_event.set()
+        processed_frame_count = 0
+        while not frame_queue.empty():
+            try:
+                frame_queue.get_nowait()  # Remove each item in a thread-safe way
+            except Empty:
+                break
         start_button.config(text="Start")
     else:
         stop_event.clear()
+        stop_ocr_processing_event.clear()
         Thread(target=background_task, daemon=True).start()
+        Thread(target=ocr_processing, daemon=True).start()
         start_button.config(text="Stop")
 
 def toggle_mode():
@@ -141,7 +153,10 @@ def toggle_mode():
     mode_label.config(fg="red" if check_type else "green")
 
 def on_spacebar(event=None):
+    global manual_stop
     toggle_thread()
+    manual_stop = not manual_stop
+
 
 
 
@@ -308,7 +323,7 @@ def update_video():
 
         video_label.imgtk = imgtk
         video_label.config(image=imgtk)
-    root.after(500, update_video)
+    root.after(80, update_video)
 
 
 def update_processed_frames():
@@ -317,9 +332,8 @@ def update_processed_frames():
     frame_queue_length = frame_queue.qsize()
     # Update the UI labels dynamically
     right_label_second_row.config(text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}", anchor="e")
-
     # Schedule the next update (if desired)
-    top_frame.after(200, update_processed_frames)  # Update every 100 ms
+    top_frame.after(80, update_processed_frames)  # Update every 100 ms
 
 
 def main_check(serial_number,bypass):
@@ -372,39 +386,33 @@ def main_check(serial_number,bypass):
 
 
 def stop_and_review():
-    global thread_running,processed_frame_count
+    global thread_running
     # Store the previous thread state and stop the thread if it's running
-    #if thread_running:
-    toggle_thread()  # This will stop the thread
-    ocr_processing_event.set()  # Stop OCR processing
-    processed_frame_count = 0
-    while not frame_queue.empty():
-        try:
-            frame_queue.get_nowait()  # Remove each item in a thread-safe way
-        except Empty:
-            break
+    if thread_running:
+        toggle_thread()  # This will stop the thread
     open_manual_window()
 
-def resume_thread():
-    if stop_event.is_set() and (manual_window is None or not manual_window.winfo_exists()):
+def auto_resume_thread():
+    global manual_stop
+    if stop_event.is_set() and manual_stop is False and (manual_window is None or not manual_window.winfo_exists()):
+        stop_ocr_processing_event.clear()
         toggle_thread()
-        ocr_processing_event.clear()
         Thread(target=ocr_processing, daemon=True).start()
         return
-    root.after(5000, resume_thread)
+    root.after(80, auto_resume_thread)
 
 def ocr_processing():
     print("OCR Processing")
-    global ocr_mode, serial, processed_frame_count
-    while not ocr_processing_event.is_set():
+    global thread_running, ocr_mode, serial, processed_frame_count
+    while not stop_ocr_processing_event.is_set():
         if stop_event.is_set():
             break
         texts = []
         start_time = time.time()
         frame_queue_length = frame_queue.qsize()
-        while time.time() - start_time < scan_interval and frame_queue_length >= 1:
+        while time.time() - start_time < scan_interval and frame_queue_length >= 3:
             try:
-                processing_frame = frame_queue.get(timeout=5)
+                processing_frame = frame_queue.get(timeout=1)
                 processed_frame_count +=1
             except queue.Empty:
                 #print("Queue is empty, exiting loop.")
@@ -430,7 +438,7 @@ def ocr_processing():
         #print("checking for serial number")
         if serial:
             main_check(serial,False)
-        time.sleep(0.05)
+        #time.sleep(0.05)
     #frame_queue.task_done()
 
 def background_task():
@@ -671,10 +679,10 @@ root.bind('<Down>', lambda event: open_manual_window())
 
 ###
 update_processed_frames()
-create_year_window()
+#create_year_window()
 
 # Start OCR background thread
-ocr_processing_event.clear()
+stop_ocr_processing_event.clear()
 Thread(target=ocr_processing, daemon=True).start()
 #autostart
 if autostart:
@@ -689,7 +697,7 @@ if autostart:
 
 
 # Start GUI video update loop
-resume_thread()
+auto_resume_thread()
 update_video()
 root.mainloop()
 
