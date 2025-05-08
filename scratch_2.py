@@ -1,16 +1,28 @@
 import cv2
 import datetime
-#import easyocr
-import numpy as np
 import os
-import pytesseract
-pytesseract.pytesseract.tesseract_cmd = "/opt/homebrew/bin/tesseract"
 import queue
 import re
 import subprocess
 import tempfile
 import time
+import threading
 import tkinter as tk
+import Cocoa
+import Quartz
+from Foundation import NSData
+import Vision
+from Vision import VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizeTextRequestRevision3
+from Quartz import (
+    kCGImageAlphaNone,
+    kCGBitmapByteOrderDefault,
+    kCGImageAlphaPremultipliedLast,
+    kCGBitmapByteOrder32Big,
+    CGDataProviderCreateWithData,
+    CGColorSpaceCreateDeviceRGB,
+    CGColorSpaceCreateDeviceGray
+)
+
 
 from bs4 import BeautifulSoup
 from collections import Counter
@@ -40,8 +52,6 @@ stop_ocr_processing_event = Event()
 
 # Create a queue to hold processed frames
 frame_queue = queue.Queue()
-# Initialize EasyOCR reader
-#reader = easyocr.Reader(['en'])
 
 # Global paths
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -55,14 +65,14 @@ recent_matches = {}
 # =============================== CONFIG ===============================
 autostart = True
 autocrop = False
-
+factor = 1.5 #(zoom)
 # Initialize the flip state
-flip_active = False
+flip_active = True
 
-roi_x, roi_y, roi_w, roi_h = 600, 100, 800, 300  # crop area
-scan_interval = 5
-use_processed_frame = True  # Default is original frame
-ocr_mode = "pytesseract" #easyocr or pytesseract
+
+def resize_for_ocr(image, factor=2):
+    return cv2.resize(image, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
+
 
 # Regex patterns
 serial_pattern = re.compile(r'\b[A-Z0-9]{10,12}\b')
@@ -72,40 +82,6 @@ emc_pattern = re.compile(r'\bEMC\s(\d{4})\b')
 
 
 
-
-
-
-def sharpen(image):
-    kernel = np.array([[0, -1, 0],
-                       [-1, 5, -1],
-                       [0, -1, 0]])
-    return cv2.filter2D(image, -1, kernel)
-
-def enhance_contrast(image):
-    return cv2.equalizeHist(image)
-
-
-def binarize(image):
-    return cv2.adaptiveThreshold(image, 255,
-                                 cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                 cv2.THRESH_BINARY, 11, 2)
-
-
-
-def denoise(image):
-    return cv2.fastNlMeansDenoising(image, None, 30, 7, 21)
-
-def resize_for_ocr(image, factor=2):
-    return cv2.resize(image, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
-
-def preprocess_for_ocr(frame):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    resized = resize_for_ocr(gray)
-    sharpened = sharpen(resized)
-    denoised = denoise(sharpened)
-    contrast = enhance_contrast(denoised)
-    binary = binarize(contrast)
-    return binary
 
 
 def update_status():
@@ -122,22 +98,23 @@ def blink_status():
     if thread_running:
         update_status()
 
-
 def toggle_thread():
-    #global processed_frame_count
+    global thread_running, processed_frame_count
     if thread_running:
         stop_event.set()
         stop_ocr_processing_event.set()
         processed_frame_count = 0
         while not frame_queue.empty():
             try:
-                frame_queue.get_nowait()  # Remove each item in a thread-safe way
+                frame_queue.get_nowait()
             except Empty:
                 break
         start_button.config(text="Start")
+        thread_running = False  # Explicitly set thread_running to False
     else:
         stop_event.clear()
         stop_ocr_processing_event.clear()
+        thread_running = True  # Explicitly set thread_running to True
         Thread(target=background_task, daemon=True).start()
         Thread(target=ocr_processing, daemon=True).start()
         start_button.config(text="Stop")
@@ -154,10 +131,9 @@ def toggle_mode():
 
 def on_spacebar(event=None):
     global manual_stop
-    toggle_thread()
     manual_stop = not manual_stop
-
-
+    toggle_thread()
+    print(f"Manual stop {'enabled' if manual_stop else 'disabled'}")  # Debug print
 
 
 def runcommand(cmd):
@@ -191,7 +167,6 @@ def spec_check(serial_number):
         extract("Storage:")
     )
 
-#def generate_label(serial, amodel, emc, cpu, gpu, ram, ssd, icloud, mdm, config):
 def generate_label(serial_number, cpu, gpu, ram, ssd, icloud, mdm, config, model_name):
     html = f"""<!DOCTYPE html>
 <html><head><style>
@@ -350,12 +325,10 @@ def main_check(serial_number,bypass):
             except Empty:
                 break
         processed_frame_count = 0
-        right_label_second_row.config(
-            text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}", anchor="e")
-        #if amodel:
-        #    amodel = clean_common_ocr_errors(amodel)
-        #if emc:
-        #    emc = clean_common_ocr_errors(emc)
+        root.after(0, lambda: right_label_second_row.config(
+            text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}",
+            anchor="e"))
+
         print("Checking Spec")
         specs = spec_check(serial_number)
         if specs or bypass:
@@ -379,10 +352,10 @@ def main_check(serial_number,bypass):
                 generate_label(serial_number, cpu, gpu, ram, ssd, icloud, mdm, config, model_name)
             else:
                 print(f"\033[91mCould not find info (VALID serial number) for serial: {serial_number}\033[0m")
-                stop_and_review()
+                root.after(0, stop_and_review)
         else:
             print(f"\033[91mCould not find info (INVALID serial number) for serial: {serial_number}\033[0m")
-            stop_and_review()
+            root.after(0, stop_and_review)
 
 
 def stop_and_review():
@@ -390,20 +363,118 @@ def stop_and_review():
     # Store the previous thread state and stop the thread if it's running
     if thread_running:
         toggle_thread()  # This will stop the thread
-    open_manual_window()
+    root.after(50, open_manual_window)
 
 def auto_resume_thread():
-    global manual_stop
-    if stop_event.is_set() and manual_stop is False and (manual_window is None or not manual_window.winfo_exists()):
+    global manual_stop, thread_running
+    # Only auto-resume if:
+    # 1. Thread is stopped (stop_event is set)
+    # 2. NOT manually stopped by spacebar (manual_stop is False)
+    # 3. No manual window is open
+    # 4. Thread is not already running
+    if (stop_event.is_set() and
+        not manual_stop and
+        not thread_running and
+        (manual_window is None or not manual_window.winfo_exists())):
+        print("Auto-resuming thread...")  # Debug print
+        stop_event.clear()
         stop_ocr_processing_event.clear()
-        toggle_thread()
+        Thread(target=background_task, daemon=True).start()
         Thread(target=ocr_processing, daemon=True).start()
-        return
-    root.after(80, auto_resume_thread)
+        start_button.config(text="Stop")
+        thread_running = True
+    root.after(5000, auto_resume_thread)
+
+def on_spacebar(event=None):
+    global manual_stop
+    manual_stop = not manual_stop  # Toggle manual stop state
+    toggle_thread()  # This will stop/start the thread
+    print(f"Manual stop {'enabled' if manual_stop else 'disabled'}")  # Debug print
+
+
+def cv2_to_cgimage(cv_img):
+    """Convert OpenCV image to CGImage."""
+    # Ensure image is RGB (convert if it's BGR)
+    if len(cv_img.shape) == 3 and cv_img.shape[2] == 3:
+        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+
+    height, width = cv_img.shape[:2]
+
+    # Handle both RGB and grayscale images
+    if len(cv_img.shape) == 3:
+        bytes_per_row = width * 3
+        color_space = Quartz.CGColorSpaceCreateDeviceRGB()
+        bitmap_info = Quartz.kCGBitmapByteOrderDefault | Quartz.kCGImageAlphaNone
+    else:
+        bytes_per_row = width
+        color_space = Quartz.CGColorSpaceCreateDeviceGray()
+        bitmap_info = Quartz.kCGImageAlphaNone
+
+    # Create NSData from numpy array
+    data = cv_img.tobytes()
+    data_provider = Quartz.CGDataProviderCreateWithData(None, data, len(data), None)
+
+    # Create CGImage
+    cg_image = Quartz.CGImageCreate(
+        width,  # width
+        height,  # height
+        8,  # bits per component
+        8 * cv_img.shape[-1],  # bits per pixel
+        bytes_per_row,  # bytes per row
+        color_space,  # colorspace
+        bitmap_info,  # bitmap info
+        data_provider,  # provider
+        None,  # decode array
+        False,  # should interpolate
+        Quartz.kCGRenderingIntentDefault  # rendering intent
+    )
+
+    return cg_image
+
+
+def process_with_vision(frame):
+    """Process image with Vision framework for OCR."""
+    texts = []
+
+    try:
+        # Convert OpenCV frame to CGImage
+        cg_image = cv2_to_cgimage(frame)
+
+        # Create Vision request with latest revision
+        request = VNRecognizeTextRequest.alloc().init()
+        request.setRevision_(VNRecognizeTextRequestRevision3)
+
+        # Configure for fast recognition and disable language correction
+        request.setRecognitionLevel_(0)  # Fast recognition
+        request.setUsesLanguageCorrection_(False)
+        request.setMinimumTextHeight_(0.1)  # Adjust minimum text height if needed
+
+        # Create handler and perform request
+        handler = VNImageRequestHandler.alloc().initWithCGImage_options_(cg_image, None)
+        success = handler.performRequests_error_([request], None)
+
+        if success:
+            # Extract results
+            results = request.results()
+            if results:
+                for observation in results:
+                    confidence = observation.confidence()
+                    if confidence > 0.5:  # Filter by confidence threshold
+                        candidates = observation.topCandidates_(1)
+                        if candidates and len(candidates):
+                            recognized_text = candidates[0].string()
+                            text_bbox = observation.boundingBox()  # Get bounding box if needed
+                            texts.append(recognized_text)
+
+    except Exception as e:
+        print(f"Vision framework error: {e}")
+
+    return texts
+
 
 def ocr_processing():
     print("OCR Processing")
-    global thread_running, ocr_mode, serial, processed_frame_count
+    global thread_running, ocr_mode, serial, processed_frame_count, preprocess
     while not stop_ocr_processing_event.is_set():
         if stop_event.is_set():
             break
@@ -446,6 +517,7 @@ def background_task():
 
     while not stop_event.is_set():
         ret, frame = cap.read()
+        frame = resize_for_ocr(frame,factor)
         # Apply flip if the state is active
         if flip_active:
             frame = cv2.flip(frame, -1)
@@ -458,8 +530,7 @@ def background_task():
             final_frame = frame[y:y + h, x:x + w]  # Crop the rectangle
         else:
             final_frame = frame;
-        processed_frame = preprocess_for_ocr(final_frame)
-        frame_queue.put(processed_frame)  # Put the processed frame into the queue
+        frame_queue.put(final_frame)  # Put the processed frame into the queue
         feed_frame = frame.copy()
         number_var.set(f"Serial: {serial}")
         status_text_core = "Checking For iCloud and MDM Lock" if check_type else "Checking Spec Only"
@@ -495,6 +566,12 @@ def background_task():
 
 def open_manual_window():
     global serial, manual_window, thread_running
+
+    # Ensure we're running in the main thread
+    if threading.current_thread() is not threading.main_thread():
+        root.after(0, open_manual_window)
+        return
+
     # If a manual_window already exists, destroy it
     if manual_window is not None and manual_window.winfo_exists():
         manual_window.destroy()
@@ -670,19 +747,9 @@ root.bind('<Down>', lambda event: open_manual_window())
 update_processed_frames()
 #create_year_window()
 
-# Start OCR background thread
-stop_ocr_processing_event.clear()
-Thread(target=ocr_processing, daemon=True).start()
 #autostart
 if autostart:
     toggle_thread()
-
-#image_path = "/Users/meeposcan/Desktop/s234.jpg"  # Replace <your-username> with your system username
-#image = cv2.imread(image_path)
-#if image is not None:
-#    time.sleep(1)
-#    print(f"Image loaded successfully: {image_path}")
-#    frame_queue.put(image)  # Add the image to the frame queue
 
 
 # Start GUI video update loop
