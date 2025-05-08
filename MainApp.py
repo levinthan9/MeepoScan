@@ -479,6 +479,7 @@ def process_with_vision(frame):
 def ocr_processing():
     print("OCR Processing")
     global thread_running, ocr_mode, serial, processed_frame_count, preprocess
+    wait_start_time = None # Initialize the start time for buffer wait
     while not stop_ocr_processing_event.is_set():
         if stop_event.is_set():
             break
@@ -493,6 +494,19 @@ def ocr_processing():
                 #print("Vision OCR Results:", texts)
                 # Extract and process serial numbers
                 serials, _, _ = extract_matches(texts)
+
+                # Check conditions: serials size or wait time
+                if len(serials) > 10:
+                    wait_start_time = None  # Reset wait time
+                    serial = most_common(serials)
+                else:
+                    # Start or update wait timer for buffer
+                    if wait_start_time is None:
+                        wait_start_time = time.time()
+                    elif (time.time() - wait_start_time) >= 2:
+                        serial = most_common(serials)
+                        wait_start_time = None  # Reset timer
+
                 serial = most_common(serials)
                 if serial:
                     main_check(serial, False)
