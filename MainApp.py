@@ -180,7 +180,6 @@ def get_model_name(last4):
         print(f"An error occurred while fetching data: {e}")
         return None
 
-
 def spec_check(serial_number):
     url = f"https://macfinder.co.uk/model/macbook-pro-15-inch-2018/?serial={serial_number}"
     temp_html = os.path.join(TEMP_DIR, "mac_info.html")
@@ -208,6 +207,34 @@ def spec_check(serial_number):
         extract("Memory:"),
         extract("Storage:")
     )
+
+import csv
+
+
+def write_last4_to_csv(last4, model_name, filepath="last4.csv"):
+    """
+    Writes the last4 serial and model name to a CSV file.
+
+    Args:
+        last4 (str): The last 4 digits of the serial number.
+        model_name (str): The model name.
+        filepath (str): The path to the CSV file.
+
+    Returns:
+        None
+    """
+    try:
+        # Open the file in append mode ('a') to add a new row without overwriting
+        with open(filepath, mode='a', newline='') as file:
+            writer = csv.writer(file)
+
+            # Write the row as [last4, model_name]
+            writer.writerow([last4, model_name])
+
+        print(f"Successfully added: {last4}, {model_name} to {filepath}")
+    except Exception as e:
+        print(f"An error occurred while writing to {filepath}: {e}")
+
 
 def generate_label(serial_number, model_name, cpu, gpu, ram, ssd, icloud, mdm, config, model_name_sickw):
     html = f"""<!DOCTYPE html>
@@ -444,6 +471,9 @@ def main_check(serial_number,bypass):
         else:
             print(f"Serial {serial_number} is unknown yet in local database. Attempting to check with Apple")
             model_name = get_model_name(last_4_digits)
+            if model_name:
+                write_last4_to_csv(last_4_digits, model_name, "last4.csv" )
+
 
 
         specs = spec_check(serial_number)
@@ -461,16 +491,17 @@ def main_check(serial_number,bypass):
                     icloud = None
                     mdm = None
                     config = None
-                    #log_event(f"Spec Check: {serial} | Amodel: {amodel} | EMC: {emc} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}")
+                    model_name_sickw = None
                     log_event(f"Spec Check: {serial_number} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}")
-                ###Print Label
-                generate_label(serial_number, model_name, cpu, gpu, ram, ssd, icloud, mdm, config, model_name_sickw)
             else:
-                print(f"\033[91mCould not find info (VALID serial number) for serial: {serial_number}\033[0m")
-                root.after(0, stop_and_review)
+                print(f"\033[91mCould not find spec info (VALID serial number) for serial: {serial_number}\033[0m")
+                #root.after(0, stop_and_review)
         else:
-            print(f"\033[91mCould not find info (INVALID serial number) for serial: {serial_number}\033[0m")
-            root.after(0, stop_and_review)
+            print(f"\033[91mCould not find spec info (INVALID serial number) for serial: {serial_number}\033[0m")
+            #root.after(0, stop_and_review)
+
+        ###Print Label
+        generate_label(serial_number, model_name, cpu, gpu, ram, ssd, icloud, mdm, config, model_name_sickw)
 
 
 def stop_and_review():
