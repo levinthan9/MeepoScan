@@ -65,7 +65,7 @@ recent_matches = {}
 # =============================== CONFIG ===============================
 autostart = True
 autocrop = False
-factor = 1.5 #(zoom)
+factor = 1  #(zoom)
 # Initialize the flip state
 flip_active = True
 
@@ -168,16 +168,20 @@ def spec_check(serial_number):
     )
 
 def generate_label(serial_number, cpu, gpu, ram, ssd, icloud, mdm, config, model_name):
+    model_name="MacBook Pro (13-inch, 2017, Four Thunderbolt 3 Ports)"
     html = f"""<!DOCTYPE html>
 <html><head><style>
   @page {{ margin: 0mm; size: 4in 1in; }}
-  body {{ font-size: 12px; }}
+  body {{ font-size: 14 px; }}
+  .bold {{ font-weight: bold; }}
+  .model-name {{ font-size: 26px; font-weight: bold; }}
+
 </style></head>
-<body><div style='text-align: center;'>
-{serial_number} {" iCloud " + icloud if icloud else ""}  {" MDM " + mdm if mdm else ""}
+<body><div style='text-align: center;' class='bold'>
+<span class="model-name">{model_name if model_name else ""}</span>
+{"<br>" + serial_number} {" iCloud " + icloud if icloud else ""}  {" MDM " + mdm if mdm else ""}
 {"<br>" + config if config else ""}
-{"<br>" + model_name if model_name else ""}
-<br>{cpu} {gpu} {ram} {ssd}
+{"<br>" + cpu if cpu else ""} {" " + gpu if gpu else ""} {" " + ram if ram else ""} {" " + ssd if ssd else ""}
 </div></body></html>"""
 
     html_path = os.path.join(os.path.expanduser("~/Documents"), f"{serial_number}.html")
@@ -539,9 +543,10 @@ def background_task():
 
         frame_h, frame_w = feed_frame.shape[:2]
 
-        # Centered top rectangle
-        roi_x = (frame_w - roi_w) // 2
-        roi_y = 50
+        # Centered rectangle with width 100 and height 50
+        roi_w, roi_h = 500, 200  # Set the rectangle dimensions directly
+        roi_x = (frame_w - roi_w) // 2  # Center horizontally by dividing by 2 instead of 3
+        roi_y = (frame_h - roi_h) // 2  # Center vertically
         cv2.rectangle(feed_frame, (roi_x, roi_y), (roi_x + roi_w, roi_y + roi_h), (0, 255, 0), 2)
 
         # Helper to center text
@@ -557,7 +562,7 @@ def background_task():
         cv2.putText(feed_frame, status_text, (status_x, status_y), cv2.FONT_HERSHEY_SIMPLEX, status_scale, color,
                     status_thickness, cv2.LINE_AA)
 
-        time.sleep(0.03)
+        time.sleep(0.1)
 
     cap.release()
     thread_running = False
@@ -579,6 +584,9 @@ def open_manual_window():
     # Create a new pop-up window
     manual_window = tk.Toplevel(root)
     manual_window.title("Manual Check")
+
+    # Add this line after creating the manual_window
+    manual_window.bind('<Escape>', lambda event: on_manual_window_close())
 
     # Ensure the window appears on top
     manual_window.transient(root)  # Make it a child of the main window
