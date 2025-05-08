@@ -2,6 +2,7 @@ import cv2
 import datetime
 import os
 import queue
+import requests
 import re
 import subprocess
 import tempfile
@@ -12,6 +13,7 @@ import Cocoa
 import Quartz
 from Foundation import NSData
 import Vision
+import csv  # Module to handle CSV file loading
 from Vision import VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizeTextRequestRevision3
 from Quartz import (
     kCGImageAlphaNone,
@@ -59,8 +61,12 @@ PRINTER_NAME = "4BARCODE"
 TEMP_DIR = tempfile.gettempdir()
 
 # Time to wait before allowing the same match again (in seconds)
-DUPLICATE_TIMEOUT = 20
+DUPLICATE_TIMEOUT = 60
 recent_matches = {}
+
+# Global variable to store the data table from last4.csv
+last4 = []
+
 
 # =============================== CONFIG ===============================
 autostart = True
@@ -139,6 +145,42 @@ def on_spacebar(event=None):
 def runcommand(cmd):
     return subprocess.check_output(cmd, shell=True, text=True).strip()
 
+# Fetch the Apple check data using requests
+def get_model_name(last4):
+    """
+    Fetches the data from Apple's API and extracts the model name.
+
+    Args:
+        last4 (str): The last 4 digits of the serial number.
+
+    Returns:
+        str: The extracted model name or None if not found.
+    """
+    url = f"https://support-sp.apple.com/sp/product?cc={last4}"
+
+    try:
+        response = requests.get(url)
+
+        if response.status_code == 200:
+            applecheck = response.text  # Fetch the API response as text
+
+            # Extract the model name using a regex pattern
+            match = re.search(r'<configCode>(.*?)</configCode>', applecheck)
+
+            if match:
+                model_name = match.group(1)
+                return model_name
+            else:
+                print("Model name not found in response.")
+                return None
+        else:
+            print(f"Failed to fetch data. HTTP Status Code: {response.status_code}")
+            return None
+    except requests.RequestException as e:
+        print(f"An error occurred while fetching data: {e}")
+        return None
+
+
 def spec_check(serial_number):
     url = f"https://macfinder.co.uk/model/macbook-pro-15-inch-2018/?serial={serial_number}"
     temp_html = os.path.join(TEMP_DIR, "mac_info.html")
@@ -167,8 +209,7 @@ def spec_check(serial_number):
         extract("Storage:")
     )
 
-def generate_label(serial_number, cpu, gpu, ram, ssd, icloud, mdm, config, model_name):
-    model_name="MacBook Pro (13-inch, 2017, Four Thunderbolt 3 Ports)"
+def generate_label(serial_number, model_name, cpu, gpu, ram, ssd, icloud, mdm, config, model_name_sickw):
     html = f"""<!DOCTYPE html>
 <html><head><style>
   @page {{ margin: 0mm; size: 4in 1in; }}
@@ -178,9 +219,9 @@ def generate_label(serial_number, cpu, gpu, ram, ssd, icloud, mdm, config, model
 
 </style></head>
 <body><div style='text-align: center;' class='bold'>
-<span class="model-name">{model_name if model_name else ""}</span>
+<span class="model-name">{model_name+ "<br>" if model_name else ""}</span>
 {"<br>" + serial_number} {" iCloud " + icloud if icloud else ""}  {" MDM " + mdm if mdm else ""}
-{"<br>" + config if config else ""}
+{"<br>" + config if config else ""} {model_name_sickw if model_name_sickw else ""}
 {"<br>" + cpu if cpu else ""} {" " + gpu if gpu else ""} {" " + ram if ram else ""} {" " + ssd if ssd else ""}
 </div></body></html>"""
 
@@ -212,11 +253,38 @@ def log_event(message):
     with open(log_file, "a") as f:
         f.write(f"{timestamp} {message}\n")
 
+def load_api_key(filepath="apikey.txt"):
+    """
+    Loads the API key from the specified text file.
+
+    Args:
+        filepath (str): Path to the text file containing the API key.
+
+    Returns:
+        str: The loaded API key as a string.
+
+    Raises:
+        FileNotFoundError: If the specified file is not found.
+        Exception: If any other error occurs during file reading.
+    """
+    try:
+        with open(filepath, mode='r') as file:
+            apikey = file.read().strip()  # Load and remove any leading/trailing whitespace
+            print("API key loaded successfully.")
+            return apikey
+    except FileNotFoundError:
+        print(f"File {filepath} not found. Please ensure it is placed in the correct folder.")
+        return None
+    except Exception as e:
+        print(f"An error occurred while loading {filepath}: {e}")
+        return None
+
+
 def icloudCheck(serial_number):
     import re
     import json
-
-    api_url = f"https://sickw.com/api.php?format=json&key=75K-GL0-CWP-WMG-U3M-NXF-CHH-VHS&imei={serial_number}&service=26"
+    apikey = load_api_key()
+    api_url = f"https://sickw.com/api.php?format=json&key={apikey}&imei={serial_number}&service=26"
 
     # Initialize default values
     icloud = ""
@@ -244,9 +312,9 @@ def icloudCheck(serial_number):
         raw_result = response_data.get("result", "")
 
         # Extract Model Name using regex search
-        model_name_match = re.search(r"Model Name:\s*([^<]+)<br \/>", raw_result)
-        if model_name_match:
-            model_name = model_name_match.group(1).strip()
+        model_name_sickw_match = re.search(r"Model Name:\s*([^<]+)<br \/>", raw_result)
+        if model_name_sickw_match:
+            model_name_sickw = model_name_sickw_match.group(1).strip()
 
         # Extract configurations and other values (if needed)
         config_match = re.search(r"Device Configuration:\s*([^<]+)", raw_result)
@@ -263,17 +331,17 @@ def icloudCheck(serial_number):
 
         # Log the extracted Model Name and other values
         log_event(
-            f"Full Check: {serial_number} | Model Name: {model_name} | Config: {config} | Response Code: {response_code}")
+            f"Full Check: {serial_number} | Model Name: {model_name_sickw} | Config: {config} | Response Code: {response_code}")
         log_event(f"Response: {response_body}")
         messagebox.showinfo("Device Info",
-                            f"Model Name: {model_name}\nDevice Configuration: {config}\nMDM Lock: {mdm}\niCloud Lock: {icloud}\nHTTP Response: {response_code}")
+                            f"Model Name: {model_name_sickw}\nDevice Configuration: {config}\nMDM Lock: {mdm}\niCloud Lock: {icloud}\nHTTP Response: {response_code}")
 
     except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
         log_event(f"IMEI {serial_number} - API call failed with error: {e}")
         messagebox.showerror("Error", f"API call failed for {serial_number}: {e}")
 
     # Return the extracted information
-    return icloud, mdm, config, model_name
+    return icloud, mdm, config, model_name_sickw
 
 
 def clean_common_ocr_errors(text):
@@ -315,8 +383,35 @@ def update_processed_frames():
     top_frame.after(80, update_processed_frames)  # Update every 100 ms
 
 
+def load_last4_data(filepath="last4.csv"):
+    """
+    Loads the data from the given CSV file and initializes the `last4` global variable.
+    Each row contains last 4 digits of serial and the model name (no header in the file).
+
+    Args:
+        filepath (str): The path to the CSV file.
+
+    Updates:
+        last4 (global list): A list of tuples, where each tuple is (last_4_serial, model_name).
+    """
+    global last4
+    try:
+        with open(filepath, mode='r') as file:
+            reader = csv.reader(file)
+            last4 = [(row[0], row[1]) for row in reader]  # Tuple: (last_4_serial, model_name)
+            print(f"Loaded {len(last4)} entries from {filepath}.")
+    except FileNotFoundError:
+        print(f"File {filepath} not found. Please ensure it is placed in the correct folder.")
+        last4 = []
+    except Exception as e:
+        print(f"An error occurred while loading {filepath}: {e}")
+        last4 = []
+
+
 def main_check(serial_number,bypass):
-    global processed_frame_count, serial
+    global processed_frame_count, serial, last4
+    load_last4_data("last4.csv")
+
     if serial_number:
         if is_duplicate(serial_number):
             return
@@ -334,6 +429,23 @@ def main_check(serial_number,bypass):
             anchor="e"))
 
         print("Checking Spec")
+        # Extract the last 4 digits of the serial
+        last_4_digits = serial_number[-4:]
+
+        # Check if the last 4 digits match any entry in `last4`
+        matches = [entry for entry in last4 if entry[0] == last_4_digits]
+        if matches:
+            for match in matches:
+                model_name = match[1]
+                # Log or validate further based on the matched model name
+                print(f"Serial {serial_number} matches model: {model_name}.")
+                break
+
+        else:
+            print(f"Serial {serial_number} is unknown yet in local database. Attempting to check with Apple")
+            model_name = get_model_name(last_4_digits)
+
+
         specs = spec_check(serial_number)
         if specs or bypass:
             cpu, gpu, ram, ssd = specs
@@ -342,18 +454,17 @@ def main_check(serial_number,bypass):
                 if check_type:
                     icloudInfo = icloudCheck(serial_number)
                     if icloudInfo:
-                        icloud, mdm, config, model_name = icloudInfo
+                        icloud, mdm, config, model_name_sickw = icloudInfo
                         #log_event(f"iCloud MDM Check: {serial} | Amodel: {amodel} | EMC: {emc} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} "
-                        log_event(f"iCloud MDM Check: {serial_number} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} ")
+                        log_event(f"iCloud MDM Check: {serial_number} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} | Model: {model_name_sickw} ")
                 else:
                     icloud = None
                     mdm = None
                     config = None
-                    model_name = None
                     #log_event(f"Spec Check: {serial} | Amodel: {amodel} | EMC: {emc} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}")
                     log_event(f"Spec Check: {serial_number} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}")
-                #generate_label(serial, amodel, emc, cpu, gpu, ram, ssd, icloud, mdm, config)
-                generate_label(serial_number, cpu, gpu, ram, ssd, icloud, mdm, config, model_name)
+                ###Print Label
+                generate_label(serial_number, model_name, cpu, gpu, ram, ssd, icloud, mdm, config, model_name_sickw)
             else:
                 print(f"\033[91mCould not find info (VALID serial number) for serial: {serial_number}\033[0m")
                 root.after(0, stop_and_review)
@@ -698,11 +809,6 @@ def toggle_flip():
     flip_active = not flip_active
     # Update the button text based on the flip state
     flip_button.config(text="FLIP ON" if flip_active else "FLIP OFF")
-
-
-
-
-
 
 
 
