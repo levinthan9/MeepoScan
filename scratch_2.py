@@ -407,39 +407,28 @@ def ocr_processing():
     while not stop_ocr_processing_event.is_set():
         if stop_event.is_set():
             break
-        texts = []
-        start_time = time.time()
-        frame_queue_length = frame_queue.qsize()
-        while time.time() - start_time < scan_interval and frame_queue_length >= 3:
-            try:
-                processing_frame = frame_queue.get(timeout=1)
-                processed_frame_count +=1
-            except queue.Empty:
-                #print("Queue is empty, exiting loop.")
-                break
+        try:
+            processing_frame = frame_queue.get(timeout=1)
+            processed_frame_count += 1
 
-            #roi = processing_frame[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
-            if (ocr_mode == "easyocr"):
-                result = reader.readtext(processing_frame, detail=0)
-                texts.extend(result)
-            else:
-                result = pytesseract.image_to_string(processing_frame, lang='eng', config='--psm 1')
-                #result = pytesseract.text(processing_frame)
-                texts.append(result)
+            # Use Vision framework OCR
+            texts = process_with_vision(processing_frame)
 
-            #print(result)
-        if texts:
-            print(texts)
-        serials, amodels, emcs = extract_matches(texts)
-        serial = most_common(serials)
-        #serial = "C1MQCSVH0TY3"
-        #amodel = most_common(amodels)
-        #emc = most_common(emcs)
-        #print("checking for serial number")
-        if serial:
-            main_check(serial,False)
-        #time.sleep(0.05)
-    #frame_queue.task_done()
+            if texts:
+                #print("Vision OCR Results:", texts)
+                # Extract and process serial numbers
+                serials, _, _ = extract_matches(texts)
+                serial = most_common(serials)
+                if serial:
+                    main_check(serial, False)
+
+        except queue.Empty:
+            continue
+        except Exception as e:
+            print(f"OCR processing error: {e}")
+
+        time.sleep(0.05)
+
 
 def background_task():
     global thread_running, serial, autocrop, feed_frame
