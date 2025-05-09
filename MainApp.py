@@ -848,40 +848,6 @@ def open_manual_window():
     manual_window.bind('<Return>', lambda event: submit_serial())
 
 
-def create_year_window():
-    year_window = tk.Toplevel(root)
-    year_window.title("Generate Labels by Year")
-    year_window.geometry("500x1000")
-    year_window.resizable(False, False)
-
-    # Calculate number of years (2010 to 2025)
-    years = list(range(2010, 2026))
-    total_years = len(years)
-
-    # Create frame for buttons
-    button_frame = tk.Frame(year_window)
-    button_frame.pack(expand=True, fill='both', padx=20, pady=20)
-
-    # Configure grid with 2 columns
-    button_frame.grid_columnconfigure(0, weight=1)
-    button_frame.grid_columnconfigure(1, weight=1)
-
-    # Create buttons for each year
-    for i, year in enumerate(years):
-        row = i // 2  # Integer division to determine row
-        col = i % 2  # Remainder to determine column (0 or 1)
-
-        # Create button with specific year model
-        btn = tk.Button(
-            button_frame,
-            text=f"MacBook Pro {year}",
-            width=20,
-            height=2,
-            command=lambda y=year: generate_label(None, None, None, None, None, None, None, None, f"MacBook Pro {y}")
-        )
-        btn.grid(row=row, column=col, padx=10, pady=5, sticky="nsew")
-
-
 def toggle_flip():
     global flip_active
     flip_active = not flip_active
@@ -951,7 +917,6 @@ root.bind('<Down>', lambda event: open_manual_window())
 
 ###
 update_processed_frames()
-#create_year_window()
 
 #autostart
 if autostart:
