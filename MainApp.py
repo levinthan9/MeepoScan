@@ -62,7 +62,7 @@ PRINTER_NAME = "4BARCODE"
 TEMP_DIR = tempfile.gettempdir()
 
 # Time to wait before allowing the same match again (in seconds)
-DUPLICATE_TIMEOUT = 60
+DUPLICATE_TIMEOUT = 120
 recent_matches = {}
 
 # Global variable to store the data table from last4.csv
@@ -80,7 +80,7 @@ factor = 1  #(zoom)
 flip_active = True
 
 
-def resize_for_ocr(image, factor=2):
+def resize_for_ocr(image, factor):
     return cv2.resize(image, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
 
 
@@ -276,8 +276,8 @@ def generate_label(serial_number, model_name, cpu, gpu, ram, ssd, icloud, mdm, c
     with open(html_path, "w") as f:
         f.write(html)
 
-    runcommand(f"'{CHROME}' --headless --disable-gpu --no-pdf-header-footer --print-to-pdf='{pdf_path}' '{html_path}'")
-    run(f"lp -o fit-to-page -o media=Custom.4x1in -p {PRINTER_NAME} '{pdf_path}'", shell=True)
+    #runcommand(f"'{CHROME}' --headless --disable-gpu --no-pdf-header-footer --print-to-pdf='{pdf_path}' '{html_path}'")
+    #run(f"lp -o fit-to-page -o media=Custom.4x1in -p {PRINTER_NAME} '{pdf_path}'", shell=True)
     time.sleep(1)
     #if os.path.exists(pdf_path):
         #os.remove(pdf_path)
@@ -290,7 +290,7 @@ def is_duplicate(key):
     if last_time:
         time_diff = now - last_time
         if time_diff < DUPLICATE_TIMEOUT:
-            print(f"\033[93mSkipping duplicate serial {key} - {DUPLICATE_TIMEOUT - time_diff:.1f} seconds remaining\033[0m")
+            print(f"\033[93mSkipping {key} - {DUPLICATE_TIMEOUT - time_diff:.1f} seconds remaining\033[0m")
             return True
     recent_matches[key] = now
     return False
@@ -639,7 +639,7 @@ def process_with_vision(frame):
         # Configure for fast recognition and disable language correction
         request.setRecognitionLevel_(0)  # Fast recognition
         request.setUsesLanguageCorrection_(False)
-        request.setMinimumTextHeight_(0.1)  # Adjust minimum text height if needed
+        request.setMinimumTextHeight_(0.05)  # Adjust minimum text height if needed
 
         # Create handler and perform request
         handler = VNImageRequestHandler.alloc().initWithCGImage_options_(cg_image, None)
@@ -652,7 +652,7 @@ def process_with_vision(frame):
                 for observation in results:
                     confidence = observation.confidence()
                     if confidence > 0.5:  # Filter by confidence threshold
-                        candidates = observation.topCandidates_(1)
+                        candidates = observation.topCandidates_(10)
                         if candidates and len(candidates):
                             recognized_text = candidates[0].string()
                             text_bbox = observation.boundingBox()  # Get bounding box if needed
@@ -667,7 +667,9 @@ def process_with_vision(frame):
 def ocr_processing():
     print("OCR Processing")
     global thread_running, ocr_mode, serial, processed_frame_count, preprocess
-    wait_start_time = None # Initialize the start time for buffer wait
+    wait_start_time = None
+    collected_serials = []  # Buffer to collect serials
+
     while not stop_ocr_processing_event.is_set():
         if stop_event.is_set():
             break
@@ -679,25 +681,35 @@ def ocr_processing():
             texts = process_with_vision(processing_frame)
 
             if texts:
-                #print("Vision OCR Results:", texts)
                 # Extract and process serial numbers
                 serials, _, _ = extract_matches(texts)
+                if serials:
+                    # Add new serials to buffer, but maintain uniqueness
+                    collected_serials.extend(serials)  # Add new serials to buffer
+                    #print(f"Serials extracted from OCR: {collected_serials}")
 
-                # Check conditions: serials size or wait time
-                if len(serials) > 10:
-                    wait_start_time = None  # Reset wait time
-                    serial = most_common(serials)
-                else:
-                    # Start or update wait timer for buffer
+                    # Get the most common serial from collected ones
+                    if len(collected_serials) >= 5:  # Reduced threshold for testing
+                        most_common_serial = most_common(collected_serials)
+                        # Only process if we have a clear winner
+                        if most_common_serial:
+                            #print(f"Processing most common serial: {most_common_serial}")
+                            collected_serials = []  # Clear buffer after processing
+                            main_check(most_common_serial, False)
+                            wait_start_time = None  # Reset wait time
+
+                    # Implement timeout-based processing
+                    current_time = time.time()
                     if wait_start_time is None:
-                        wait_start_time = time.time()
-                    elif (time.time() - wait_start_time) >= 2:
-                        serial = most_common(serials)
+                        wait_start_time = current_time
+                    elif (current_time - wait_start_time) >= 10:  # 3-second timeout
+                        if collected_serials:
+                            most_common_serial = most_common(collected_serials)
+                            if most_common_serial:
+                                print(f"Processing by timeout: {most_common_serial}")
+                                main_check(most_common_serial, False)
+                        collected_serials = []  # Clear buffer
                         wait_start_time = None  # Reset timer
-
-                serial = most_common(serials)
-                if serial:
-                    main_check(serial, False)
 
         except queue.Empty:
             continue
