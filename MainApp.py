@@ -841,8 +841,8 @@ def open_manual_window():
     check_button.grid(row=1, column=1, pady=10, sticky="e")
 
     # Place the "Bypass Check" button
-    check_button_bypass = tk.Button(manual_window, text="Bypass Check", command=submit_serial_bypass)
-    check_button_bypass.grid(row=1, column=2, pady=10, sticky="e")
+    #check_button_bypass = tk.Button(manual_window, text="Bypass Check", command=submit_serial_bypass)
+    #check_button_bypass.grid(row=1, column=2, pady=10, sticky="e")
 
     # Bind the Enter key to the submit_serial function
     manual_window.bind('<Return>', lambda event: submit_serial())
