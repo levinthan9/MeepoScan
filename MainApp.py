@@ -53,7 +53,8 @@ stop_ocr_processing_event = Event()
 
 
 # Create a queue to hold processed frames
-frame_queue = queue.Queue()
+frame_queue = Queue(maxsize=10)  # Limit queue to 10 frames
+
 
 # Global paths
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -66,6 +67,9 @@ recent_matches = {}
 
 # Global variable to store the data table from last4.csv
 last4 = []
+
+# Add this with other global variables at the top of the file
+main_check_lock = threading.Lock()
 
 
 # =============================== CONFIG ===============================
@@ -210,6 +214,20 @@ def spec_check(serial_number):
 
 import csv
 
+def add_to_frame_queue(frame):
+    global frame_queue_length
+    try:
+        if frame_queue.full():
+            # Remove oldest frame if queue is full
+            try:
+                frame_queue.get_nowait()
+            except Empty:
+                pass
+        frame_queue.put_nowait(frame)
+        frame_queue_length = frame_queue.qsize()
+    except:
+        print("\033[93mWarning: Could not add frame to queue\033[0m")
+
 
 def write_last4_to_csv(last4, model_name, filepath="last4.csv"):
     """
@@ -269,10 +287,14 @@ def generate_label(serial_number, model_name, cpu, gpu, ram, ssd, icloud, mdm, c
 def is_duplicate(key):
     now = time.time()
     last_time = recent_matches.get(key)
-    if last_time and now - last_time < DUPLICATE_TIMEOUT:
-        return True
+    if last_time:
+        time_diff = now - last_time
+        if time_diff < DUPLICATE_TIMEOUT:
+            print(f"\033[93mSkipping duplicate serial {key} - {DUPLICATE_TIMEOUT - time_diff:.1f} seconds remaining\033[0m")
+            return True
     recent_matches[key] = now
     return False
+
 
 def log_event(message):
     log_file = os.path.join(os.path.expanduser("~/Documents/log.txt"))
@@ -311,13 +333,13 @@ def icloudCheck(serial_number):
     import re
     import json
     apikey = load_api_key()
-    api_url = f"https://sickw.com/api.php?format=json&key={apikey}&imei={serial_number}&service=26"
+    api_url = f"https://sickw.com/api.php?format=json&key={apikey}&imei={serial_number}&service=72"
 
     # Initialize default values
     icloud = ""
     mdm = ""
     config = ""
-    model_name = ""
+    model_name_sickw = ""
     response_code = "Unknown"  # Default value for response code
 
     try:
@@ -360,8 +382,8 @@ def icloudCheck(serial_number):
         log_event(
             f"Full Check: {serial_number} | Model Name: {model_name_sickw} | Config: {config} | Response Code: {response_code}")
         log_event(f"Response: {response_body}")
-        messagebox.showinfo("Device Info",
-                            f"Model Name: {model_name_sickw}\nDevice Configuration: {config}\nMDM Lock: {mdm}\niCloud Lock: {icloud}\nHTTP Response: {response_code}")
+        #messagebox.showinfo("Device Info",
+                           # f"Model Name: {model_name_sickw}\nDevice Configuration: {config}\nMDM Lock: {mdm}\niCloud Lock: {icloud}\nHTTP Response: {response_code}")
 
     except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
         log_event(f"IMEI {serial_number} - API call failed with error: {e}")
@@ -435,28 +457,53 @@ def load_last4_data(filepath="last4.csv"):
         last4 = []
 
 
-def main_check(serial_number,bypass):
+def main_check(serial_number, bypass):
     global processed_frame_count, serial, last4
-    load_last4_data("last4.csv")
 
-    if serial_number:
-        if is_duplicate(serial_number):
-            return
-        serial_number = clean_common_ocr_errors(serial_number)
-        print(f"\033[92mFound Serial Number: {serial_number}\033[0m")
+    # Early return if no serial number
+    if not serial_number:
+        return
+
+    # Clean the serial number first
+    serial_number = clean_common_ocr_errors(serial_number)
+
+    # Check for duplicate BEFORE acquiring the lock
+    if is_duplicate(serial_number):
+        return
+
+    # Try to acquire the lock, return if it's already locked
+    if not main_check_lock.acquire(blocking=False):
+        print(f"\033[93mAnother main_check is already running for serial {serial}, skipping {serial_number}...\033[0m")
+        return
+
+    try:
+        print(f"\033[92mStarting processing for Serial Number: {serial_number}\033[0m")
+        load_last4_data("last4.csv")
+
         serial = serial_number
         while not frame_queue.empty():
             try:
-                frame_queue.get_nowait()  # Remove each item in a thread-safe way
+                frame_queue.get_nowait()
             except Empty:
                 break
+
         processed_frame_count = 0
         root.after(0, lambda: right_label_second_row.config(
             text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}",
             anchor="e"))
 
+        # Initialize variables
+        model_name = None
+        cpu = None
+        gpu = None
+        ram = None
+        ssd = None
+        icloud = None
+        mdm = None
+        config = None
+        model_name_sickw = None
+
         print("Checking Spec")
-        # Extract the last 4 digits of the serial
         last_4_digits = serial_number[-4:]
 
         # Check if the last 4 digits match any entry in `last4`
@@ -464,44 +511,43 @@ def main_check(serial_number,bypass):
         if matches:
             for match in matches:
                 model_name = match[1]
-                # Log or validate further based on the matched model name
                 print(f"Serial {serial_number} matches model: {model_name}.")
                 break
-
         else:
             print(f"Serial {serial_number} is unknown yet in local database. Attempting to check with Apple")
             model_name = get_model_name(last_4_digits)
             if model_name:
-                write_last4_to_csv(last_4_digits, model_name, "last4.csv" )
-
-
+                write_last4_to_csv(last_4_digits, model_name, "last4.csv")
 
         specs = spec_check(serial_number)
-        if specs or bypass:
+        if specs:
             cpu, gpu, ram, ssd = specs
-            if cpu or bypass:
+            if cpu:
                 print(f"Found CPU: {cpu}")
-                if check_type:
-                    icloudInfo = icloudCheck(serial_number)
-                    if icloudInfo:
-                        icloud, mdm, config, model_name_sickw = icloudInfo
-                        #log_event(f"iCloud MDM Check: {serial} | Amodel: {amodel} | EMC: {emc} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} "
-                        log_event(f"iCloud MDM Check: {serial_number} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} | Model: {model_name_sickw} ")
-                else:
-                    icloud = None
-                    mdm = None
-                    config = None
-                    model_name_sickw = None
-                    log_event(f"Spec Check: {serial_number} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}")
+                log_event(f"Spec Check: {serial_number} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}")
             else:
                 print(f"\033[91mCould not find spec info (VALID serial number) for serial: {serial_number}\033[0m")
-                #root.after(0, stop_and_review)
         else:
             print(f"\033[91mCould not find spec info (INVALID serial number) for serial: {serial_number}\033[0m")
-            #root.after(0, stop_and_review)
+
+        if check_type:
+            icloudInfo = icloudCheck(serial_number)
+            if icloudInfo:
+                icloud, mdm, config, model_name_sickw = icloudInfo
+                log_event(f"iCloud MDM Check: {serial_number} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} | Model: {model_name_sickw} ")
+                print(f"\033[91miCloud: {icloud} | MDM: {mdm} | Config: {config} | Model: {model_name_sickw}\033[0m")
+
 
         ###Print Label
         generate_label(serial_number, model_name, cpu, gpu, ram, ssd, icloud, mdm, config, model_name_sickw)
+
+    except Exception as e:
+        print(f"\033[91mError in main_check: {e}\033[0m")
+
+    finally:
+        # Always release the lock when done
+        main_check_lock.release()
+        print(f"\033[92mCompleted processing for serial: {serial_number}\033[0m")
 
 
 def stop_and_review():
@@ -690,7 +736,8 @@ def background_task():
             final_frame = frame[y:y + h, x:x + w]  # Crop the rectangle
         else:
             final_frame = frame;
-        frame_queue.put(final_frame)  # Put the processed frame into the queue
+        #frame_queue.put(final_frame)  # Put the processed frame into the queue
+        add_to_frame_queue(final_frame)
         feed_frame = frame.copy()
         number_var.set(f"Serial: {serial}")
         status_text_core = "Checking For iCloud and MDM Lock" if check_type else "Checking Spec Only"
