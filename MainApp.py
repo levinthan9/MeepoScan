@@ -24,6 +24,12 @@ from Quartz import (
     CGColorSpaceCreateDeviceRGB,
     CGColorSpaceCreateDeviceGray
 )
+import psutil
+import os
+import tracemalloc
+import gc
+from memory_profiler import profile
+import traceback
 
 
 from bs4 import BeautifulSoup
@@ -57,12 +63,12 @@ frame_queue = Queue(maxsize=10)  # Limit queue to 10 frames
 
 
 # Global paths
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PRINTER_NAME = "4BARCODE"
-TEMP_DIR = tempfile.gettempdir()
+#CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+#PRINTER_NAME = "4BARCODE"
+#TEMP_DIR = tempfile.gettempdir()
 
 # Time to wait before allowing the same match again (in seconds)
-DUPLICATE_TIMEOUT = 120
+#DUPLICATE_TIMEOUT = 120
 recent_matches = {}
 
 # Global variable to store the data table from last4.csv
@@ -421,15 +427,6 @@ def update_video():
         video_label.config(image=imgtk)
     root.after(80, update_video)
 
-
-def update_processed_frames():
-    global processed_frame_count, frame_queue_length
-    # Increment processed frames and get queue size
-    frame_queue_length = frame_queue.qsize()
-    # Update the UI labels dynamically
-    right_label_second_row.config(text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}", anchor="e")
-    # Schedule the next update (if desired)
-    top_frame.after(80, update_processed_frames)  # Update every 100 ms
 
 
 def load_last4_data(filepath="last4.csv"):
@@ -870,72 +867,283 @@ def toggle_flip():
     flip_button.config(text="FLIP ON" if flip_active else "FLIP OFF")
 
 
+############
+##MAIN APP##
+############
+class MainApp:
+    # Class-level constants (moved from globals)
+    CHROME = "Google Chrome"
+    PRINTER_NAME = "Your Printer Name"
+    TEMP_DIR = "temp"
+    DUPLICATE_TIMEOUT = 300  # seconds
 
-# GUI Setup
-root = tk.Tk()
-root.title("Meepo Auto Serial Number Scan System")
-root.geometry("800x600")
-root.configure(bg="#2e3b4e")
-root.attributes('-topmost', True)
-root.after(1, root.lift)
+    def __init__(self):
+        try:
+            # Configure logging
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s - %(levelname)s - %(message)s',
+                handlers=[
+                    logging.FileHandler('app.log'),
+                    logging.StreamHandler(sys.stdout)
+                ]
+            )
 
-status_var = tk.StringVar(value="🔴 Stopped")
-number_var = tk.StringVar(value="")
-mode_var = tk.StringVar(value="Mode: Basic")
+            # Initialize main window
+            self.tk = tk.Tk()
+            self.tk.title("Meepo Auto Serial Number Scan System")
+            self.tk.protocol("WM_DELETE_WINDOW", self.on_closing)
+            self.tk.geometry("800x600")
+            self.tk.configure(bg="#2e3b4e")
+            self.tk.attributes('-topmost', True)
+            self.tk.after(200, self.tk.lift)
 
-# ---- Top Row ----
-top_frame = tk.Frame(root, bg="#2e3b4e")
-top_frame.pack(pady=10, fill='x')
+            # Initialize all attributes
+            self.stop_event = threading.Event()
+            self.thread_running = False
+            self.blink_state = False
+            self.check_type = "auto"
+            self.status_var = tk.StringVar(value="Ready")
+            self.number_var = tk.StringVar(value="")
+            self.mode_var = tk.StringVar(value="Auto")
+            self.feed_frame = None
+            self.manual_window = None
+            self.manual_stop = False
+            self.serial = None
 
-mode_label = tk.Label(top_frame, textvariable=mode_var, font=("Helvetica", 16, "bold"), fg="green", bg="#2e3b4e")
-mode_label.pack(side="left", padx=(20, 10))
+            # Initialize counters and queues
+            self.processed_frame_count = 0
+            self.frame_queue_length = 0
+            self.stop_ocr_processing_event = threading.Event()
+            self.frame_queue = Queue(maxsize=100)  # Limited queue size
 
-status_label = tk.Label(top_frame, textvariable=status_var, font=("Helvetica", 16), fg="green", bg="#2e3b4e")
-status_label.pack(side="left", padx=10)
+            # Initialize data structures
+            self.recent_matches = []
+            self.last4 = set()
+            self.main_check_lock = threading.Lock()
 
-# ---- Serial Display ----
-number_label = tk.Label(root, textvariable=number_var, font=("Helvetica", 28, "bold"), fg="green", bg="#2e3b4e")
-number_label.pack(pady=5)
+            # Initialize configuration
+            self.autostart = False
+            self.autocrop = True
+            self.factor = 1.0
+            self.flip_active = False
 
-right_label_second_row = Label(top_frame, text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}", anchor="e")
-right_label_second_row.pack(anchor="e")
+            # Initialize patterns
+            self.serial_pattern = re.compile(r'your_pattern_here')
+            self.amodel_pattern = re.compile(r'your_pattern_here')
+            self.emc_pattern = re.compile(r'your_pattern_here')
 
-# ---- Button Row ----
-button_frame = tk.Frame(root, bg="#2e3b4e")
-button_frame.pack(pady=10)
+            # ---- Video Display ----
+            video_label = self.tk.Label(self.tk, bg="#2e3b4e")
+            video_label.pack(pady=10)
 
-mode_button = tk.Button(button_frame, text="Change Mode", width=12, command=toggle_mode,
-                        bg="black", fg="green", font=("Helvetica", 12, "bold"))
-mode_button.pack(side="left", padx=10)
+            # Bind spacebar
+            self.tk.bind('<space>', on_spacebar)
+            # Bind the Down Arrow key to open the manual window
+            self.bind('<Down>', lambda event: open_manual_window())
 
-start_button = tk.Button(button_frame, text="Start", width=10, command=toggle_thread,
-                         bg="black", fg="green", font=("Helvetica", 12, "bold"))
-start_button.pack(side="left", padx=10)
+            ###
+            update_processed_frames(self)
 
-manual_button = tk.Button(button_frame, text="Manual", command=open_manual_window)
-manual_button.pack(side="left", padx=10)
+            # autostart
+            if autostart:
+                toggle_thread()
+
+            # Initialize thread control variables
+            self.stop_event = threading.Event()
+            self.thread_running = False
+            self.stop_ocr_processing_event = threading.Event()
+
+            # Initialize queues and counters with proper max sizes
+            self.frame_queue = Queue(maxsize=100)  # Limit queue size
+            self.processed_frame_count = 0
+            self.frame_queue_length = 0
+
+            # Initialize state variables
+            self.blink_state = False
+            self.check_type = "auto"
+            self.flip_active = False
+
+            # Initialize UI variables
+            self.status_var = tk.StringVar(value="Ready")
+            self.number_var = tk.StringVar(value="")
+            self.mode_var = tk.StringVar(value="Auto")
+
+            # Initialize data structures
+            self.recent_matches = []
+            self.last4 = set()
+            self.main_check_lock = threading.Lock()
+
+            # Initialize configuration
+            self.autostart = False
+            self.autocrop = True
+            self.factor = 1.0
+
+            # Create UI elements
+            self.create_ui()
+
+            # Load any saved data
+            self.load_saved_data()
+
+        except Exception as e:
+            logging.error(f"Initialization error: {str(e)}")
+            logging.error(traceback.format_exc())
+            messagebox.showerror("Initialization Error",
+                                 f"Failed to initialize application: {str(e)}\n"
+                                 "Check app.log for details")
+            sys.exit(1)
+
+    def setup_variables(self):
+        """Initialize all instance variables"""
+        # Threading controls
+        self.stop_event = threading.Event()
+        self.thread_running = False
+        self.stop_ocr_processing_event = threading.Event()
+
+        # UI state variables
+        self.status_var = tk.StringVar(value="Ready")
+        self.number_var = tk.StringVar(value="")
+        self.mode_var = tk.StringVar(value="Auto")
+        self.blink_state = False
+        self.check_type = "auto"
+        self.flip_active = False
+
+        # Processing queues and counters
+        self.frame_queue = Queue(maxsize=100)
+        self.processed_frame_count = 0
+        self.frame_queue_length = 0
+
+        # Data storage
+        self.recent_matches = []
+        self.last4 = set()
+        self.main_check_lock = threading.Lock()
+
+    def create_ui(self):
+        """Create all UI elements"""
+        try:
+            # Create frames
+            #self.feed_frame = tk.Frame(self.tk)
+            #self.feed_frame.pack(pady=5)
+
+            status_var = tk.StringVar(value="🔴 Stopped")
+            number_var = tk.StringVar(value="")
+            mode_var = tk.StringVar(value="Mode: Basic")
+
+            # ---- Top Row ----
+            top_frame = tk.Frame(root, bg="#2e3b4e")
+            top_frame.pack(pady=10, fill='x')
+
+            mode_label = tk.Label(top_frame, textvariable=mode_var, font=("Helvetica", 16, "bold"), fg="green",
+                                  bg="#2e3b4e")
+            mode_label.pack(side="left", padx=(20, 10))
+
+            status_label = tk.Label(top_frame, textvariable=status_var, font=("Helvetica", 16), fg="green",
+                                    bg="#2e3b4e")
+            status_label.pack(side="left", padx=10)
+
+            # ---- Serial Display ----
+            number_label = tk.Label(root, textvariable=number_var, font=("Helvetica", 28, "bold"), fg="green",
+                                    bg="#2e3b4e")
+            number_label.pack(pady=5)
+
+            right_label_second_row = Label(top_frame,
+                                           text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}",
+                                           anchor="e")
+            right_label_second_row.pack(anchor="e")
+
+            # ---- Button Row ----
+            button_frame = tk.Frame(root, bg="#2e3b4e")
+            button_frame.pack(pady=10)
+
+            mode_button = tk.Button(button_frame, text="Change Mode", width=12, command=toggle_mode,
+                                    bg="black", fg="green", font=("Helvetica", 12, "bold"))
+            mode_button.pack(side="left", padx=10)
+
+            start_button = tk.Button(button_frame, text="Start", width=10, command=toggle_thread,
+                                     bg="black", fg="green", font=("Helvetica", 12, "bold"))
+            start_button.pack(side="left", padx=10)
+
+            manual_button = tk.Button(button_frame, text="Manual", command=open_manual_window)
+            manual_button.pack(side="left", padx=10)
+
+            # Create a button for toggling flip
+            flip_button = tk.Button(button_frame, text="FLIP OFF", command=toggle_flip, width=10)
+            flip_button.pack(side="left", padx=10)
+
+        except Exception as e:
+            logging.error(f"UI creation error: {str(e)}")
+            logging.error(traceback.format_exc())
+            raise
+
+    def update_processed_frames():
+        global processed_frame_count, frame_queue_length
+        # Increment processed frames and get queue size
+        frame_queue_length = frame_queue.qsize()
+        # Update the UI labels dynamically
+        right_label_second_row.config(
+            text=f"Processed Frames: {processed_frame_count}   Frames in Queue: {frame_queue_length}", anchor="e")
+        # Schedule the next update (if desired)
+        top_frame.after(80, update_processed_frames)  # Update every 100 ms
+
+    def load_saved_data(self):
+        """Load any saved configuration or data"""
+        try:
+            self.load_last4_data()
+            # Add any other data loading here
+        except Exception as e:
+            logging.warning(f"Error loading saved data: {str(e)}")
+            # Continue running even if loading fails
+
+    def on_closing(self):
+        """Clean shutdown when window is closed"""
+        try:
+            # Stop all threads
+            self.stop_event.set()
+            self.stop_ocr_processing_event.set()
+
+            # Clean up resources
+            if hasattr(self, 'frame_queue'):
+                while not self.frame_queue.empty():
+                    try:
+                        self.frame_queue.get_nowait()
+                    except:
+                        break
+
+            # Close serial connection if exists
+            if hasattr(self, 'serial') and self.serial:
+                self.serial.close()
+
+            # Destroy the main window
+            self.tk.destroy()
+
+        except Exception as e:
+            logging.error(f"Error during shutdown: {str(e)}")
+            logging.error(traceback.format_exc())
+            sys.exit(1)
+
+    def __del__(self):
+        """Destructor to ensure cleanup"""
+        try:
+            self.on_closing()
+        except:
+            pass
 
 
-# Create a button for toggling flip
-flip_button = tk.Button(button_frame, text="FLIP OFF", command=toggle_flip, width=10)
-flip_button.pack(side="left", padx=10)
+if __name__ == "__main__":
+    try:
+        app = MainApp()
+        app.tk.mainloop()
+    except Exception as e:
+        logging.critical(f"Fatal error: {str(e)}")
+        logging.critical(traceback.format_exc())
+        sys.exit(1)
 
 
-# ---- Video Display ----
-video_label = tk.Label(root, bg="#2e3b4e")
-video_label.pack(pady=10)
 
-# Bind spacebar
-root.bind('<space>', on_spacebar)
-# Bind the Down Arrow key to open the manual window
-root.bind('<Down>', lambda event: open_manual_window())
 
-###
-update_processed_frames()
 
-#autostart
-if autostart:
-    toggle_thread()
+
+
 
 
 # Start GUI video update loop
