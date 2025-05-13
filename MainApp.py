@@ -119,7 +119,7 @@ class MainApp:
             self.tk = tk.Tk()
             self.tk.title("Meepo Auto Serial Number Scan System")
             self.tk.protocol("WM_DELETE_WINDOW", self.on_closing)
-            self.tk.geometry("800x600")
+            self.tk.geometry("1200x800")
             self.tk.configure(bg="#2e3b4e")
             self.tk.attributes('-topmost', True)
             self.tk.after(200, self.tk.lift)
@@ -163,10 +163,8 @@ class MainApp:
 
         # Initialize counters and queues
         self.processed_frame_count = 0
-        self.frame_queue_length = 0
         self.stop_ocr_processing_event = threading.Event()
         self.frame_queue = Queue(maxsize=25)  # Limit queue size
-        self.frame_queue_length = 0
 
         # Initialize data structures
         self.recent_matches = []
@@ -192,7 +190,7 @@ class MainApp:
 
         # ---- Video Display ----
         self.video_label = tk.Label(self.tk, bg="#2e3b4e")
-        self.video_label.pack(pady=10)
+        self.video_label.pack(pady=10,side='bottom')
 
         # Initialize thread control variables
         self.stop_event = threading.Event()
@@ -244,13 +242,13 @@ class MainApp:
                 stats = current_snapshot.compare_to(self.last_memory_snapshot, 'lineno')
 
                 # Log significant memory changes
-                if memory_mb > 500:  # Alert if using more than 500MB
+                if memory_mb > 5000:  # Alert if using more than 500MB
                     print(f"\nHIGH MEMORY USAGE ALERT:")
                     print(f"Memory Usage: {memory_mb:.2f} MB")
                     print(f"CPU Usage: {cpu_percent}%")
-                    print("\nTop 3 memory changes:")
-                    for stat in stats[:3]:
-                        print(stat)
+                    #print("\nTop 3 memory changes:")
+                    #for stat in stats[:3]:
+                        #print(stat)
 
                     # Force garbage collection
                     gc.collect()
@@ -275,7 +273,6 @@ class MainApp:
             self.manual_window = None
             self.manual_stop = False
 
-            # ---- Top Row ----
             # ---- Top Row ----
             top_frame = tk.Frame(self.tk, bg="#2e3b4e")
             top_frame.pack(pady=10, fill='x')
@@ -312,7 +309,7 @@ class MainApp:
                 top_frame,
                 text=(
                     f"Processed Frames: {self.processed_frame_count}   "
-                    f"Frames in Queue: {self.frame_queue_length}"
+                    f"Frames in Queue: {self.frame_queue.qsize()}"
                 ),
                 anchor="e"
             )
@@ -451,7 +448,6 @@ class MainApp:
 
                 # Mark threads as running
                 self.thread_running = True
-
                 # Start background threads
                 Thread(target=self.background_task, daemon=True).start()
                 Thread(target=self.ocr_processing, daemon=True).start()
@@ -636,8 +632,7 @@ class MainApp:
                     self.frame_queue.get_nowait()
                 except Empty:
                     pass
-
-                self.frame_queue.put_nowait(frame)
+            self.frame_queue.put_nowait(frame)
         except Exception as e:
             print("\033[93mWarning: Could not add frame to queue\033[0m")
             logging.error(f"Warning: Could not add frame to queue: {e}")
@@ -951,7 +946,7 @@ class MainApp:
 
             # Update the video_label with the new image
             self.video_label.imgtk = imgtk
-            self.video_label.config(image=imgtk)
+            self.video_label.config(image=imgtk, width=1000, height=600)
 
         # Re-run the update_video method after 80ms
         self.tk.after(80, self.update_video)
@@ -1034,7 +1029,7 @@ class MainApp:
 
             # Update the UI
             self.tk.after(0, lambda: self.right_label_second_row.config(
-                text=f"Processed Frames: {self.processed_frame_count}   Frames in Queue: {self.frame_queue_length}",
+                text=f"Processed Frames: {self.processed_frame_count}   Frames in Queue: {self.frame_queue.qsize()}",
                 anchor="e")
                           )
 
@@ -1236,18 +1231,14 @@ class MainApp:
         self.log_event("OCR Processing started")
         wait_start_time = None
         collected_serials = []  # Buffer to collect serials
-
         while not self.stop_ocr_processing_event.is_set():
             if self.stop_event.is_set():  # Stop if the global stop event is set
                 break
-
             try:
                 # Get a frame from the queue with a timeout
                 processing_frame = self.frame_queue.get(timeout=1)
-
                 # Increment processed frame count
                 self.processed_frame_count += 1
-
                 # Use Vision framework OCR to process the frame
                 texts = self.process_with_vision(processing_frame)
 
@@ -1265,7 +1256,7 @@ class MainApp:
                                 self.log_event(f"Processing most common serial: {most_common_serial}")
                                 # Process the most common serial
                                 collected_serials = []  # Clear buffer after processing
-                                self.main_check(most_common_serial, False)
+                                self.main_check(most_common_serial)
                                 wait_start_time = None  # Reset wait time
 
                         # Implement timeout-based processing
@@ -1277,11 +1268,13 @@ class MainApp:
                                 most_common_serial = self.most_common(collected_serials)
                                 if most_common_serial:
                                     self.log_event(f"Processing by timeout: {most_common_serial}")
-                                    self.main_check(most_common_serial, False)
+                                    self.main_check(most_common_serial)
                             collected_serials = []  # Clear buffer after timeout
                             wait_start_time = None  # Reset timer
 
             except queue.Empty:
+                # Handle the case when no frame is available
+                print("No frame available in queue")
                 continue  # Continue if the frame queue is empty
             except Exception as e:
                 self.log_event(f"OCR processing error: {e}")
@@ -1432,9 +1425,14 @@ class MainApp:
         # Handle serial submission
         def submit_serial(bypass=False):
             self.serial = serial_entry.get()  # Update instance-level serial value
-            self.main_check(self.serial, bypass)  # Call main_check with the entered serial
+            self.main_check(self.serial)  # Call main_check with the entered serial
             self.manual_window.destroy()  # Close the manual window
             self.tk.attributes('-topmost', True)  # Restore main window's "always on top" property
+
+        def _on_manual_window_close():
+            # Restore root's topmost setting when manual_window is closed
+            self.tk.attributes('-topmost', True)
+            self.manual_window.destroy()
 
         # Bind Enter key to the serial submission function
         self.manual_window.bind('<Return>', lambda event: submit_serial())
@@ -1463,10 +1461,8 @@ class MainApp:
         """
         Updates labels to reflect processed frame count and queue size dynamically.
         """
-        self.frame_queue_length = self.frame_queue.qsize()
-
         self.right_label_second_row.config(
-            text=f"Processed Frames: {self.processed_frame_count}   Frames in Queue: {self.frame_queue_length}",
+            text=f"Processed Frames: {self.processed_frame_count}   Frames in Queue: {self.frame_queue.qsize()}",
             anchor="e"
         )
         # Schedule the next update in 80ms
