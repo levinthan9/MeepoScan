@@ -276,8 +276,8 @@ def generate_label(serial_number, model_name, cpu, gpu, ram, ssd, icloud, mdm, c
     with open(html_path, "w") as f:
         f.write(html)
 
-    #runcommand(f"'{CHROME}' --headless --disable-gpu --no-pdf-header-footer --print-to-pdf='{pdf_path}' '{html_path}'")
-    #run(f"lp -o fit-to-page -o media=Custom.4x1in -p {PRINTER_NAME} '{pdf_path}'", shell=True)
+    runcommand(f"'{CHROME}' --headless --disable-gpu --no-pdf-header-footer --print-to-pdf='{pdf_path}' '{html_path}'")
+    run(f"lp -o fit-to-page -o media=Custom.4x1in -p {PRINTER_NAME} '{pdf_path}'", shell=True)
     time.sleep(1)
     #if os.path.exists(pdf_path):
         #os.remove(pdf_path)
@@ -725,6 +725,9 @@ def background_task():
     update_status()
 
     cap = cv2.VideoCapture(0)
+    #cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    #cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    #cap.set(cv2.CAP_PROP_FPS, 30)
     if not cap.isOpened():
         number_var.set("Camera Error")
         status_var.set("🔴 Stopped")
