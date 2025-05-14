@@ -1275,19 +1275,11 @@ class MainApp:
         """
         self.log_event("OCR Processing started")
         collected_serials = []  # Buffer to collect serials
-        ocr_processing_count = 0
         while not self.stop_ocr_processing_event.is_set():
             if self.stop_event.is_set():  # Stop if the global stop event is set
                 break
             try:
-                #ocr_processing_count += 1
-                #if ocr_processing_count >= 100:
-                    #self.tk.after(2000, self.ocr_processing())
-                    #return
-                    #pass
-                #self.log_memory_usage("RAM")
                 texts = None
-                #print("OCR Running")
                 if self.frame_queue and self.frame_queue.qsize() >= 1:
                     # Get a frame from the queue with a timeout
                     #print(f"Debug: Type of frame_queue is {type(self.frame_queue)}")  # Debug
@@ -1364,6 +1356,10 @@ class MainApp:
             roi_w, roi_h = int(300 * 2.5), int(100 * 2.5)  # Rectangle size scaled 2.5x
 
             while not self.stop_event.is_set():
+                if self.processed_frame_count >= 100:
+                    self.on_closing()
+
+                    sys.exit(1)
                 ret, frame = cap.read()  # Capture a frame
                 if not ret:
                     self.number_var.set("Camera Read Fail")
