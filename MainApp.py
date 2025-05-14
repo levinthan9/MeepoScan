@@ -175,14 +175,16 @@ class MainApp:
         self.last4 = set()
         self.main_check_lock = threading.Lock()
         self.duplicate_timeout = 120  # seconds
-        self.feed_frame = None
+        self.feed_frame_zoom_in = None
+        self.feed_frame_zoom_out = None
         self.serial = None
         self.total_serials_processing_limit = 5
 
         # Initialize configuration
         self.autostart = True
         self.autocrop = False
-        self.factor = 1.0
+        self.zoom_in_factor = 1
+        self.zoom_out_factor = 0.5
         self.flip_active = True
         self.manual_stop = False
         self.manual_window = None
@@ -372,7 +374,7 @@ class MainApp:
             logging.error(traceback.format_exc())
             raise
 
-    def resize_for_ocr(self, image):
+    def resize_for_ocr(self, image, factor):
         """
         Resize the given image for OCR processing using a preset factor.
 
@@ -385,8 +387,8 @@ class MainApp:
             return cv2.resize(
                 image,
                 None,
-                fx=self.factor,
-                fy=self.factor,
+                fx=factor,
+                fy=factor,
                 interpolation=cv2.INTER_CUBIC
             )
         except Exception as e:
@@ -968,9 +970,9 @@ class MainApp:
         This method retrieves the next frame from `self.feed_frame` (if available), updates the image display
         in `self.video_label`, and schedules itself to run again after 80 milliseconds.
         """
-        if self.feed_frame is not None:
+        if self.feed_frame_zoom_in is not None:
             # Convert feed_frame (BGR) to RGB
-            img = cv2.cvtColor(self.feed_frame, cv2.COLOR_BGR2RGB)
+            img = cv2.cvtColor(self.feed_frame_zoom_in, cv2.COLOR_BGR2RGB)
 
             # Convert the frame to a PIL Image and then to an ImageTk object
             img = Image.fromarray(img)
@@ -979,8 +981,19 @@ class MainApp:
             # Update the video_label with the new image
             self.video_label.imgtk = imgtk
             self.video_label.config(image=imgtk, width=1000, height=600)
+        if self.feed_frame_zoom_out is not None:
+            # Convert feed_frame (BGR) to RGB
+            img = cv2.cvtColor(self.feed_frame_zoom_out, cv2.COLOR_BGR2RGB)
+
+            # Convert the frame to a PIL Image and then to an ImageTk object
+            img = Image.fromarray(img)
+            imgtk = ImageTk.PhotoImage(image=img)
+
+            # Update the video_label with the new image
+            #self.video_label.imgtk = imgtk
+            #self.video_label.config(image=imgtk, width=1000, height=600)
         # Re-run the update_video method after 80ms
-        self.tk.after(80, self.update_video)
+        self.tk.after(10, self.update_video)
 
 
     def load_last4_data(self, filepath="last4.csv"):
@@ -1354,24 +1367,27 @@ class MainApp:
                     break
 
                 # Resize the frame for OCR processing
-                frame = self.resize_for_ocr(frame)
+                zoom_in_frame = self.resize_for_ocr(frame, self.zoom_in_factor)
+                zoom_out_frame = self.resize_for_ocr(frame, self.zoom_out_factor)
 
                 # Apply horizontal/vertical flip if enabled
                 if self.flip_active:
-                    frame = cv2.flip(frame, -1)
+                    zoom_in_frame = cv2.flip(zoom_in_frame, -1)
+                    zoom_out_frame = cv2.flip(zoom_out_frame, -1)
 
                 # Apply cropping if `autocrop` is enabled, otherwise use the full frame
                 if self.autocrop:
                     x, y, w, h = 100, 100, 300, 200  # Example values
-                    final_frame = frame[y:y + h, x:x + w]  # Crop to rectangle
+                    final_frame = zoom_in_frame[y:y + h, x:x + w]  # Crop to rectangle
                 else:
-                    final_frame = frame
+                    final_frame = zoom_in_frame
 
                 # Add the processed frame to the frame queue
                 self.add_to_frame_queue(final_frame)
 
                 # Create a copy for UI rendering
-                self.feed_frame = frame.copy()
+                self.feed_frame_zoom_in = zoom_in_frame.copy()
+                self.feed_frame_zoom_out = zoom_out_frame.copy()
                 self.number_var.set(f"Serial: {self.serial}")
 
                 # Update the status text
@@ -1380,13 +1396,13 @@ class MainApp:
                 color = (0, 0, 255) if self.check_type else (0, 255, 0)
 
                 # Get frame dimensions
-                frame_h, frame_w = self.feed_frame.shape[:2]
+                frame_h, frame_w = self.feed_frame_zoom_in.shape[:2]
 
                 # Define rectangle placement for UI
                 roi_w, roi_h = 500, 200
                 roi_x = (frame_w - roi_w) // 2  # Center horizontally
                 roi_y = (frame_h - roi_h) // 2  # Center vertically
-                cv2.rectangle(self.feed_frame, (roi_x, roi_y), (roi_x + roi_w, roi_y + roi_h), (0, 255, 0), 2)
+                cv2.rectangle(self.feed_frame_zoom_in, (roi_x, roi_y), (roi_x + roi_w, roi_y + roi_h), (0, 255, 0), 2)
 
                 # Helper to center text
                 def center_text_x(text, font, scale, thickness):
@@ -1398,7 +1414,7 @@ class MainApp:
                 status_thickness = 2
                 status_x = center_text_x(status_text, cv2.FONT_HERSHEY_SIMPLEX, status_scale, status_thickness)
                 status_y = roi_y + roi_h + 40
-                cv2.putText(self.feed_frame, status_text, (status_x, status_y),
+                cv2.putText(self.feed_frame_zoom_in, status_text, (status_x, status_y),
                             cv2.FONT_HERSHEY_SIMPLEX, status_scale, color, status_thickness, cv2.LINE_AA)
 
                 time.sleep(0.1)  # Add delay to control the frame processing frequency
