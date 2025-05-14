@@ -122,7 +122,7 @@ class MainApp:
             self.tk = tk.Tk()
             self.tk.title("Meepo Auto Serial Number Scan System BETA")
             self.tk.protocol("WM_DELETE_WINDOW", self.on_closing)
-            self.tk.geometry("1200x800")
+            self.tk.geometry("1900x1200")
             self.tk.configure(bg="#2e3b4e")
             self.tk.attributes('-topmost', True)
             self.tk.after(100, self.tk.lift)
@@ -197,8 +197,17 @@ class MainApp:
         self.emc_pattern = re.compile(r'\bEMC\s(\d{4})\b')
 
         # ---- Video Display ----
-        self.video_label = tk.Label(self.tk, bg="#2e3b4e")
-        self.video_label.pack(pady=10,side='bottom')
+        # Create a frame to hold both video labels
+        bottom_frame = tk.Frame(self.tk, bg="#2e3b4e")
+        bottom_frame.pack(side='bottom', fill='x', pady=10)
+
+        # Configure the zoom_in_video_label (placed on the left of the bottom row)
+        self.zoom_in_video_label = tk.Label(bottom_frame, bg="#2e3b4e", text="Zoom In Video")
+        self.zoom_in_video_label.pack(side='left', padx=10)
+
+        # Configure the zoom_out_video_label (placed on the right of the bottom row)
+        self.zoom_out_video_label = tk.Label(bottom_frame, bg="#2e3b4e", text="Zoom Out Video")
+        self.zoom_out_video_label.pack(side='right', padx=10)
 
         # Initialize thread control variables
         self.stop_event = threading.Event()
@@ -287,7 +296,7 @@ class MainApp:
 
             # ---- Top Row ----
             top_frame = tk.Frame(self.tk, bg="#2e3b4e")
-            top_frame.pack(pady=10, fill='x')
+            top_frame.pack(side='top', pady=10, fill='x')
 
             self.mode_label = tk.Label(
                 top_frame,
@@ -979,8 +988,8 @@ class MainApp:
             imgtk = ImageTk.PhotoImage(image=img)
 
             # Update the video_label with the new image
-            self.video_label.imgtk = imgtk
-            self.video_label.config(image=imgtk, width=1000, height=600)
+            self.zoom_in_video_label.imgtk = imgtk
+            self.zoom_in_video_label.config(image=imgtk, width=800, height=500)
         if self.feed_frame_zoom_out is not None:
             # Convert feed_frame (BGR) to RGB
             img = cv2.cvtColor(self.feed_frame_zoom_out, cv2.COLOR_BGR2RGB)
@@ -990,8 +999,9 @@ class MainApp:
             imgtk = ImageTk.PhotoImage(image=img)
 
             # Update the video_label with the new image
-            #self.video_label.imgtk = imgtk
-            #self.video_label.config(image=imgtk, width=1000, height=600)
+            self.zoom_out_video_label.imgtk = imgtk
+            self.zoom_out_video_label.config(image=imgtk, width=1000, height=800)
+
         # Re-run the update_video method after 80ms
         self.tk.after(10, self.update_video)
 
@@ -1396,13 +1406,13 @@ class MainApp:
                 color = (0, 0, 255) if self.check_type else (0, 255, 0)
 
                 # Get frame dimensions
-                frame_h, frame_w = self.feed_frame_zoom_in.shape[:2]
+                frame_h, frame_w = self.feed_frame_zoom_out.shape[:2]
 
                 # Define rectangle placement for UI
                 roi_w, roi_h = 500, 200
                 roi_x = (frame_w - roi_w) // 2  # Center horizontally
                 roi_y = (frame_h - roi_h) // 2  # Center vertically
-                cv2.rectangle(self.feed_frame_zoom_in, (roi_x, roi_y), (roi_x + roi_w, roi_y + roi_h), (0, 255, 0), 2)
+                cv2.rectangle(self.feed_frame_zoom_out, (roi_x, roi_y), (roi_x + roi_w, roi_y + roi_h), (0, 255, 0), 2)
 
                 # Helper to center text
                 def center_text_x(text, font, scale, thickness):
@@ -1414,7 +1424,7 @@ class MainApp:
                 status_thickness = 2
                 status_x = center_text_x(status_text, cv2.FONT_HERSHEY_SIMPLEX, status_scale, status_thickness)
                 status_y = roi_y + roi_h + 40
-                cv2.putText(self.feed_frame_zoom_in, status_text, (status_x, status_y),
+                cv2.putText(self.feed_frame_zoom_out, status_text, (status_x, status_y),
                             cv2.FONT_HERSHEY_SIMPLEX, status_scale, color, status_thickness, cv2.LINE_AA)
 
                 time.sleep(0.1)  # Add delay to control the frame processing frequency
@@ -1547,8 +1557,8 @@ class MainApp:
                         break
 
             # Close serial connection if exists
-            if hasattr(self, 'serial') and self.serial:
-                self.serial.close()
+            #if hasattr(self, 'serial') and self.serial:
+                #self.serial.close()
 
             # Destroy the main window
             self.tk.destroy()
