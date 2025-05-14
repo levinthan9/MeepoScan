@@ -120,7 +120,7 @@ class MainApp:
 
             # Initialize main window
             self.tk = tk.Tk()
-            self.tk.title("Meepo Auto Serial Number Scan System v1.1")
+            self.tk.title("Meepo Auto Serial Number Scan System BETA")
             self.tk.protocol("WM_DELETE_WINDOW", self.on_closing)
             self.tk.geometry("1200x800")
             self.tk.configure(bg="#2e3b4e")
@@ -254,11 +254,11 @@ class MainApp:
                 # Log significant memory changes
                 if memory_mb > 500:  # Alert if using more than 500MB
                     #print(f"\nHIGH MEMORY USAGE ALERT:")
-                    print(f"Memory Usage: {memory_mb:.2f} MB")
+                    #print(f"Memory Usage: {memory_mb:.2f} MB")
                     #print(f"CPU Usage: {cpu_percent}%")
                     #print("\nTop 1 memory changes:")
-                    for stat in stats[:1]:
-                        print(stat)
+                    #for stat in stats[:1]:
+                        #print(stat)
 
                     # Force garbage collection
                     gc.collect()
@@ -1356,7 +1356,7 @@ class MainApp:
             roi_w, roi_h = int(300 * 2.5), int(100 * 2.5)  # Rectangle size scaled 2.5x
 
             while not self.stop_event.is_set():
-                if self.processed_frame_count >= 100:
+                if self.processed_frame_count >= 1000:
                     self.on_closing()
 
                     sys.exit(1)
