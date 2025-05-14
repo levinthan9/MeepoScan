@@ -120,7 +120,7 @@ class MainApp:
 
             # Initialize main window
             self.tk = tk.Tk()
-            self.tk.title("Meepo Auto Serial Number Scan System")
+            self.tk.title("Meepo Auto Serial Number Scan System v1.1")
             self.tk.protocol("WM_DELETE_WINDOW", self.on_closing)
             self.tk.geometry("1200x800")
             self.tk.configure(bg="#2e3b4e")
@@ -1302,7 +1302,7 @@ class MainApp:
                     # Process detected texts to extract serial numbers
                     if texts:
                         #pass
-                        print(texts)
+                        #print(texts)
                         serials, _, _ = self.extract_matches(texts)
                         if serials:
                             # Add new serials to buffer, maintaining uniqueness
