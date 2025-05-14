@@ -1253,17 +1253,11 @@ class MainApp:
             import pdb; pdb.set_trace()  #  Uncomment for debugging to inspect variables.
 
         finally:
-            # Before cleanup
-            #print(f"Retain count for cg_image BEFORE cleanup: {Quartz.CFGetRetainCount(cg_image)}")
-
-            # After cleanup
             # if provider: CGDataProviderRelease(provider)
             provider = None
             handler = None
             cg_image = None
-            gc.collect()  # Force garbage collection if necessary
-            #print(f"Retain count for cg_image AFTER cleanup: {Quartz.CFGetRetainCount(cg_image)}")  # Check the state
-
+            #gc.collect()  # Force garbage collection if necessary
         return texts
 
     # Add this decorator to memory-intensive functions
@@ -1321,7 +1315,7 @@ class MainApp:
                 continue  # Continue if the frame queue is empty
             except Exception as e:
                 self.log_event(f"OCR processing error: {e}")
-            time.sleep(0.02)
+            time.sleep(0.01)
         #print("exiting ocr_processing")
         #self.tk.after(2000, self.ocr_processing())
 
@@ -1413,7 +1407,7 @@ class MainApp:
                 cv2.putText(self.feed_frame, status_text, (status_x, status_y),
                             cv2.FONT_HERSHEY_SIMPLEX, status_scale, color, status_thickness, cv2.LINE_AA)
 
-                time.sleep(0.2)  # Add delay to control the frame processing frequency
+                time.sleep(0.1)  # Add delay to control the frame processing frequency
 
             # Release the camera resource
             cap.release()
