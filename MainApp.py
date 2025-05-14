@@ -1177,59 +1177,64 @@ class MainApp:
         self.log_event(f"Manual stop {'enabled' if self.manual_stop else 'disabled'}")  # Debug log
 
     def cv2_to_cgimage(self, cv_img):
-        """Converts an OpenCV image to a CGImage-compatible format."""
+        """
+        Converts an OpenCV image to a CGImage format for Vision processing.
+        """
+        import Quartz
 
-        # Ensure the image is in RGB format
+        # Ensure the image is RGB (convert if it's BGR)
         if len(cv_img.shape) == 3 and cv_img.shape[2] == 3:
             cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        elif len(cv_img.shape) == 2:  # Grayscale
-            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
-        else:
-            raise ValueError("cv2_to_cgimage: Unsupported image format. Must be BGR, RGB, or grayscale.")
 
-        # Convert the OpenCV image to a PIL Image
-        pil_img = Image.fromarray(cv_img)
+        height, width = cv_img.shape[:2]
 
-        # Use BytesIO to simulate a file-like object without saving to disk
-        img_byte_arr = io.BytesIO()
-        pil_img.save(img_byte_arr, format='PNG')  # PNG supports alpha
-        img_byte_arr = img_byte_arr.getvalue()
+        # Handle both RGB and grayscale images
+        if len(cv_img.shape) == 3:
+            bytes_per_row = width * 3
+            color_space = Quartz.CGColorSpaceCreateDeviceRGB()
+            bitmap_info = Quartz.kCGBitmapByteOrderDefault | Quartz.kCGImageAlphaNone
+        else:  # Grayscale image
+            bytes_per_row = width
+            color_space = Quartz.CGColorSpaceCreateDeviceGray()
+            bitmap_info = Quartz.kCGImageAlphaNone
 
-        return img_byte_arr
+        # Convert the image to NSData
+        data = cv_img.tobytes()
+        data_provider = Quartz.CGDataProviderCreateWithData(None, data, len(data), None)
+
+        # Create a CGImage object
+        cg_image = Quartz.CGImageCreate(
+            width, height,  # Dimensions
+            8,  # Bits per component
+            8 * cv_img.shape[-1],  # Bits per pixel
+            bytes_per_row,  # Bytes per row
+            color_space,  # Color space
+            bitmap_info,  # Bitmap info
+            data_provider,  # Data provider
+            None,  # Decode array
+            False,  # Should interpolate
+            Quartz.kCGRenderingIntentDefault  # Rendering intent
+        )
+        return cg_image
 
     def process_with_vision(self, frame):
         """
         Processes an image frame using Apple's Vision framework for OCR.
         """
         from Vision import VNRecognizeTextRequest, VNImageRequestHandler, VNRecognizeTextRequestRevision3
-        # Clean up resources explicitly
+
         texts = []
-        provider = None  # or any other Quartz object
 
         try:
-            #print("Processing with Vision...")
+            # Convert OpenCV frame to CGImage
+            cg_image = self.cv2_to_cgimage(frame)
 
-            #Use the new cv2_to_cgimage function and handle bytes
-            image_bytes = self.cv2_to_cgimage(frame)
-
-            # Instead of creating a CGImage directly, use the bytes.
-            # Example with imdecode (adapt as needed for your Vision processing)
-            #nparr = np.frombuffer(image_bytes, np.byte)
-            #image = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-
-            provider = CGDataProviderCreateWithData(None, image_bytes, len(image_bytes), None)
-            cg_image = CGImageCreateWithPNGDataProvider(provider, None, False, kCGRenderingIntentDefault)
-
-
-            # Create CGImage from bytes WITHOUT copying pixel buffer
-            #provider = CGDataProviderCreateWithData(None, image_bytes, len(image_bytes), None)
-
-            # Set up the text recognition request
+            # Create Vision request
             request = VNRecognizeTextRequest.alloc().init()
-            request.setRevision_(VNRecognizeTextRequestRevision3)  # Use the latest Vision revision
-            request.setRecognitionLevel_(0)  # Fast recognition (setRecognitionLevel_: 0 = fast, 1 = accurate)
-            request.setUsesLanguageCorrection_(False)  # Disable language correction for speed
-            request.setMinimumTextHeight_(0.05)  # Minimum height of text to recognize (adjustable)
+            request.setRevision_(VNRecognizeTextRequestRevision3)
+            request.setRecognitionLevel_(0)  # Fast recognition
+            request.setUsesLanguageCorrection_(False)
+            request.setMinimumTextHeight_(0.05)  # Adjust as needed
 
             # Perform OCR
             handler = VNImageRequestHandler.alloc().initWithCGImage_options_(cg_image, None)
@@ -1248,18 +1253,7 @@ class MainApp:
 
         except Exception as e:
             self.log_event(f"Vision framework error: {e}")
-            print(f"Error in Quartz operations: {e}")  # Provide more detailed info. Consider logging if necessary
-            # You might want to add a debugger breakpoint here as well.
-            import pdb; pdb.set_trace()  #  Uncomment for debugging to inspect variables.
-
-        finally:
-            # if provider: CGDataProviderRelease(provider)
-            provider = None
-            handler = None
-            cg_image = None
-            #gc.collect()  # Force garbage collection if necessary
         return texts
-
     # Add this decorator to memory-intensive functions
     #@profile
     def ocr_processing(self):
