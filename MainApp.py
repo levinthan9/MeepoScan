@@ -53,7 +53,7 @@ import cv2  # OpenCV for computer vision and image processing
 
 # Core MacOS frameworks
 import Cocoa  # macOS Cocoa framework for native UI
-import Quartz  # Core Graphics and QuartzCore frameworks
+  # Core Graphics and QuartzCore frameworks
 from Foundation import NSData  # Foundation framework for data handling
 
 # Vision framework for text recognition
@@ -93,6 +93,11 @@ from collections import Counter  # Container for counting hashable objects
 # System and memory monitoring
 import psutil  # Process and system utilities
 from memory_profiler import profile  # Memory usage profiling decorator
+
+#import CoreVideo
+import ctypes
+import numpy as np
+
 
 # Note: The order of imports can affect functionality in some cases.
 # System-level imports are listed first, followed by third-party packages,
@@ -143,6 +148,7 @@ class MainApp:
 
             self.update_processed_frames()
 
+
             # Start GUI video update loop
             self.auto_resume_thread()
             self.update_video()
@@ -167,12 +173,13 @@ class MainApp:
         self.frame_queue = Queue(maxsize=25)  # Limit queue size
 
         # Initialize data structures
-        self.recent_matches = []
+        self.recent_matches = {}
         self.last4 = set()
         self.main_check_lock = threading.Lock()
         self.duplicate_timeout = 120  # seconds
         self.feed_frame = None
         self.serial = None
+        self.total_serials_processing_limit = 5
 
         # Initialize configuration
         self.autostart = True
@@ -181,6 +188,7 @@ class MainApp:
         self.flip_active = True
         self.manual_stop = False
         self.manual_window = None
+
 
         # Initialize Regex patterns
         self.serial_pattern = re.compile(r'\b[A-Z0-9]{10,12}\b')
@@ -223,6 +231,10 @@ class MainApp:
         self.temp_dir = tempfile.gettempdir()
         self.csv_filepath="last4.csv"
 
+    def log_memory_usage(self,stage):
+        process = psutil.Process(os.getpid())
+        mem = process.memory_info().rss / (1024 * 1024)  # Convert to MB
+        print(f"[{stage}] Memory usage: {mem:.2f} MB")
 
     def start_monitoring(self):
         def monitor_resources():
@@ -242,13 +254,13 @@ class MainApp:
                 stats = current_snapshot.compare_to(self.last_memory_snapshot, 'lineno')
 
                 # Log significant memory changes
-                if memory_mb > 5000:  # Alert if using more than 500MB
+                if memory_mb > 500:  # Alert if using more than 500MB
                     print(f"\nHIGH MEMORY USAGE ALERT:")
                     print(f"Memory Usage: {memory_mb:.2f} MB")
                     print(f"CPU Usage: {cpu_percent}%")
-                    #print("\nTop 3 memory changes:")
-                    #for stat in stats[:3]:
-                        #print(stat)
+                    print("\nTop 3 memory changes:")
+                    for stat in stats[:3]:
+                        print(stat)
 
                     # Force garbage collection
                     gc.collect()
@@ -383,6 +395,27 @@ class MainApp:
             logging.error(f"Failed to resize image for OCR: {e}")
             raise
 
+
+    def print_frame_queue(self):
+        """Prints the contents of the frame_queue without modifying its state."""
+        #print(f"Debug: Frame queue size: {self.frame_queue.qsize()}")
+        contents = []
+        try:
+            # Transfer all items temporarily to a list for inspection
+            while not self.frame_queue.empty():
+                item = self.frame_queue.get()
+                contents.append(item)
+                print(f"Debug: Frame in queue - {type(item)}, Shape: {item.shape if hasattr(item, 'shape') else 'N/A'}")
+
+            # Re-add items back to the Queue to maintain its state
+            for item in contents:
+                self.frame_queue.put(item)
+
+        except Exception as e:
+            logging.error(f"Error during queue debugging: {str(e)}")
+            print(f"Error during queue debugging: {str(e)}")
+
+
     def update_status(self):
         """
         Update the status text in the UI with a blinking effect based on blink_state.
@@ -449,6 +482,7 @@ class MainApp:
                 # Mark threads as running
                 self.thread_running = True
                 # Start background threads
+                print("Thread starting")
                 Thread(target=self.background_task, daemon=True).start()
                 Thread(target=self.ocr_processing, daemon=True).start()
 
@@ -928,7 +962,6 @@ class MainApp:
 
         return serials, "", ""
 
-
     def update_video(self):
         """
         Updates the video feed by converting it to an RGB format and displaying it on the UI.
@@ -947,7 +980,6 @@ class MainApp:
             # Update the video_label with the new image
             self.video_label.imgtk = imgtk
             self.video_label.config(image=imgtk, width=1000, height=600)
-
         # Re-run the update_video method after 80ms
         self.tk.after(80, self.update_video)
 
@@ -992,25 +1024,27 @@ class MainApp:
             serial_number (str): The serial number to check.
             bypass (bool): Whether to bypass certain checks.
         """
-        # Early return if no serial number
-        if not serial_number:
-            return
-
-        # Clean the serial number to fix common OCR errors
-        serial_number = self.clean_common_ocr_errors(serial_number)
-
-        # Check for duplicate BEFORE acquiring the lock
-        if self.is_duplicate(serial_number):
-            return
-
-        # Try to acquire the lock; return if it's already locked
-        if not self.main_check_lock.acquire(blocking=False):
-            self.log_event(
-                f"Another main_check is already running for serial {self.serial}, skipping {serial_number}..."
-            )
-            return
-
         try:
+
+            # Early return if no serial number
+            if not serial_number:
+                return
+            # Clean the serial number to fix common OCR errors
+            serial_number = self.clean_common_ocr_errors(serial_number)
+            # Check for duplicate BEFORE acquiring the lock
+            if self.is_duplicate(serial_number):
+                self.log_event(
+                    f"Duplicate serial found ! Skipping {serial_number}..."
+                )
+                return
+            # Try to acquire the lock; return if it's already locked
+            if not self.main_check_lock.acquire(blocking=False):
+                self.log_event(
+                    f"Another main_check is already running for serial {self.serial}, skipping {serial_number}..."
+                )
+                return
+
+
             self.log_event(f"Starting processing for Serial Number: {serial_number}")
 
             # Load the database (last4.csv)
@@ -1140,7 +1174,6 @@ class MainApp:
         self.toggle_thread()  # Stop/start the thread accordingly
         self.log_event(f"Manual stop {'enabled' if self.manual_stop else 'disabled'}")  # Debug log
 
-
     def cv2_to_cgimage(self, cv_img):
         """
         Converts an OpenCV image to a CGImage format for Vision processing.
@@ -1187,19 +1220,20 @@ class MainApp:
         Processes an image frame using Apple's Vision framework for OCR.
         """
         from Vision import VNRecognizeTextRequest, VNImageRequestHandler, VNRecognizeTextRequestRevision3
-
+        # Clean up resources explicitly
         texts = []
 
         try:
+            #print("Processing with Vision...")
             # Convert OpenCV frame to CGImage
             cg_image = self.cv2_to_cgimage(frame)
 
-            # Create Vision request
+            # Set up the text recognition request
             request = VNRecognizeTextRequest.alloc().init()
-            request.setRevision_(VNRecognizeTextRequestRevision3)
-            request.setRecognitionLevel_(0)  # Fast recognition
-            request.setUsesLanguageCorrection_(False)
-            request.setMinimumTextHeight_(0.05)  # Adjust as needed
+            request.setRevision_(VNRecognizeTextRequestRevision3)  # Use the latest Vision revision
+            request.setRecognitionLevel_(0)  # Fast recognition (setRecognitionLevel_: 0 = fast, 1 = accurate)
+            request.setUsesLanguageCorrection_(False)  # Disable language correction for speed
+            request.setMinimumTextHeight_(0.05)  # Minimum height of text to recognize (adjustable)
 
             # Perform OCR
             handler = VNImageRequestHandler.alloc().initWithCGImage_options_(cg_image, None)
@@ -1218,8 +1252,17 @@ class MainApp:
 
         except Exception as e:
             self.log_event(f"Vision framework error: {e}")
-        return texts
 
+        finally:
+            # Before cleanup
+            #print(f"Retain count for cg_image BEFORE cleanup: {Quartz.CFGetRetainCount(cg_image)}")
+
+            # After cleanup
+            cg_image = None
+            gc.collect()  # Force garbage collection if necessary
+            #print(f"Retain count for cg_image AFTER cleanup: {Quartz.CFGetRetainCount(cg_image)}")  # Check the state
+
+        return texts
 
     # Add this decorator to memory-intensive functions
     @profile
@@ -1229,48 +1272,54 @@ class MainApp:
         The function monitors the `stop_ocr_processing_event` to gracefully exit.
         """
         self.log_event("OCR Processing started")
-        wait_start_time = None
         collected_serials = []  # Buffer to collect serials
+        ocr_processing_count = 0
         while not self.stop_ocr_processing_event.is_set():
             if self.stop_event.is_set():  # Stop if the global stop event is set
                 break
             try:
-                # Get a frame from the queue with a timeout
-                processing_frame = self.frame_queue.get(timeout=1)
-                # Increment processed frame count
-                self.processed_frame_count += 1
-                # Use Vision framework OCR to process the frame
-                texts = self.process_with_vision(processing_frame)
+                ocr_processing_count += 1
+                if ocr_processing_count >= 100:
+                    self.tk.after(2000, self.ocr_processing())
+                    return
+                    pass
+                #self.log_memory_usage("RAM")
+                texts = None
+                #print("OCR Running")
+                if self.frame_queue and self.frame_queue.qsize() >= 1:
+                    # Get a frame from the queue with a timeout
+                    #print(f"Debug: Type of frame_queue is {type(self.frame_queue)}")  # Debug
+                    #self.print_frame_queue()
 
-                # Process detected texts to extract serial numbers
-                if texts:
-                    serials, _, _ = self.extract_matches(texts)
-                    if serials:
-                        # Add new serials to buffer, maintaining uniqueness
-                        collected_serials.extend(serials)
+                    processing_frame = self.frame_queue.get(timeout=1)
+                    # Increment processed frame count
+                    self.processed_frame_count += 1
+                    # Use Vision framework OCR to process the frame
 
-                        # If sufficient serials are collected, identify the most common one
-                        if len(collected_serials) >= 5:  # Threshold for determining the most common serial
-                            most_common_serial = self.most_common(collected_serials)
-                            if most_common_serial:
-                                self.log_event(f"Processing most common serial: {most_common_serial}")
-                                # Process the most common serial
-                                collected_serials = []  # Clear buffer after processing
-                                self.main_check(most_common_serial)
-                                wait_start_time = None  # Reset wait time
+                    texts = self.process_with_vision(processing_frame)
 
-                        # Implement timeout-based processing
-                        current_time = time.time()
-                        if wait_start_time is None:
-                            wait_start_time = current_time
-                        elif (current_time - wait_start_time) >= 10:  # Timeout of 10 seconds
-                            if collected_serials:
+                    # Process detected texts to extract serial numbers
+                    if texts:
+                        #pass
+                        print(texts)
+                        serials, _, _ = self.extract_matches(texts)
+                        if serials:
+                            # Add new serials to buffer, maintaining uniqueness
+                            collected_serials.extend(serials)
+
+                            # If sufficient serials are collected, identify the most common one
+                            if len(collected_serials) >= self.total_serials_processing_limit:  # Threshold for determining the most common serial
                                 most_common_serial = self.most_common(collected_serials)
                                 if most_common_serial:
-                                    self.log_event(f"Processing by timeout: {most_common_serial}")
+                                    self.log_event(f"Processing most common serial: {most_common_serial}")
+                                    # Process the most common serial
                                     self.main_check(most_common_serial)
-                            collected_serials = []  # Clear buffer after timeout
-                            wait_start_time = None  # Reset timer
+                                collected_serials = []  # Clear buffer after processing
+                                # Limit frame polling frequency
+
+                else:
+                    pass
+                    #self.log_event("No frames in queue. Waiting for frames...")
 
             except queue.Empty:
                 # Handle the case when no frame is available
@@ -1278,9 +1327,10 @@ class MainApp:
                 continue  # Continue if the frame queue is empty
             except Exception as e:
                 self.log_event(f"OCR processing error: {e}")
-
-            # Limit frame polling frequency
             time.sleep(0.05)
+        print("exiting ocr_processing")
+        self.tk.after(2000, self.ocr_processing())
+
 
     def background_task(self):
         """
@@ -1291,9 +1341,11 @@ class MainApp:
             # Mark thread as running
             self.thread_running = True
             self.update_status()
-
+            print("Background task running")
             # Start capturing video from the default camera
             cap = cv2.VideoCapture(0)
+
+            #self.print_frame_queue()
 
             # Optional: Set desired camera properties (commented as examples)
             # cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -1387,7 +1439,7 @@ class MainApp:
         """
         # Ensure we are running in the main thread
         if threading.current_thread() is not threading.main_thread():
-            self.tk.after(0, self.open_manual_window)
+            self.tk.after(0, self.open_manual_window())
             return
 
         # If a manual window already exists, destroy it
@@ -1461,6 +1513,8 @@ class MainApp:
         """
         Updates labels to reflect processed frame count and queue size dynamically.
         """
+        #Debug
+        #print("update_processed_frame running")
         self.right_label_second_row.config(
             text=f"Processed Frames: {self.processed_frame_count}   Frames in Queue: {self.frame_queue.qsize()}",
             anchor="e"
