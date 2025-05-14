@@ -746,7 +746,8 @@ class MainApp:
                 logging.info(f"Generated PDF file: {pdf_path}")
 
                 # Print the PDF file using the lp (line printer) command
-                print_command = f"lp -o fit-to-page -o media=Custom.4x1in -d {self.printer_name} '{pdf_path}'"
+                #run(f"lp -o fit-to-page -o media=Custom.4x1in -p {PRINTER_NAME} '{pdf_path}'", shell=True)
+                print_command = f"lp -o fit-to-page -o media=Custom.4x1in -p {self.printer_name} '{pdf_path}'"
                 run(print_command, shell=True, check=True)
                 logging.info(f"Sent PDF to printer: {self.printer_name}")
 
