@@ -122,7 +122,7 @@ class MainApp:
             self.tk = tk.Tk()
             self.tk.title("Meepo Auto Serial Number Scan System BETA")
             self.tk.protocol("WM_DELETE_WINDOW", self.on_closing)
-            self.tk.geometry("1900x1200")
+            self.tk.geometry("1600x1100")
             self.tk.configure(bg="#2e3b4e")
             self.tk.attributes('-topmost', True)
             self.tk.after(100, self.tk.lift)
@@ -199,15 +199,15 @@ class MainApp:
         # ---- Video Display ----
         # Create a frame to hold both video labels
         bottom_frame = tk.Frame(self.tk, bg="#2e3b4e")
-        bottom_frame.pack(side='bottom', fill='x', pady=10)
+        bottom_frame.pack(side='bottom', fill='x', pady=5)
 
         # Configure the zoom_in_video_label (placed on the left of the bottom row)
         self.zoom_in_video_label = tk.Label(bottom_frame, bg="#2e3b4e", text="Zoom In Video")
-        self.zoom_in_video_label.pack(side='left', padx=10)
+        self.zoom_in_video_label.pack(side='left', padx=5)
 
         # Configure the zoom_out_video_label (placed on the right of the bottom row)
         self.zoom_out_video_label = tk.Label(bottom_frame, bg="#2e3b4e", text="Zoom Out Video")
-        self.zoom_out_video_label.pack(side='right', padx=10)
+        self.zoom_out_video_label.pack(side='right', padx=5)
 
         # Initialize thread control variables
         self.stop_event = threading.Event()
@@ -989,7 +989,7 @@ class MainApp:
 
             # Update the video_label with the new image
             self.zoom_in_video_label.imgtk = imgtk
-            self.zoom_in_video_label.config(image=imgtk, width=800, height=500)
+            self.zoom_in_video_label.config(image=imgtk, width=700, height=500)
         if self.feed_frame_zoom_out is not None:
             # Convert feed_frame (BGR) to RGB
             img = cv2.cvtColor(self.feed_frame_zoom_out, cv2.COLOR_BGR2RGB)
@@ -1000,7 +1000,7 @@ class MainApp:
 
             # Update the video_label with the new image
             self.zoom_out_video_label.imgtk = imgtk
-            self.zoom_out_video_label.config(image=imgtk, width=1000, height=800)
+            self.zoom_out_video_label.config(image=imgtk, width=800, height=600)
 
         # Re-run the update_video method after 80ms
         self.tk.after(10, self.update_video)
