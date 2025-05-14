@@ -211,7 +211,7 @@ class MainApp:
         # Initialize UI variables
         self.status_var = tk.StringVar(value="Ready")
         self.number_var = tk.StringVar(value="")
-        self.mode_var = tk.StringVar(value="Auto")
+        self.mode_var = tk.StringVar(value="Mode: Basic")
         self.start_button = None
         self.flip_button = None
         self.right_label_second_row = None
