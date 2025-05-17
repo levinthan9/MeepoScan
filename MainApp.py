@@ -225,6 +225,7 @@ class MainApp:
         self.mode_var = tk.StringVar(value="Mode: Basic")
         self.start_button = None
         self.flip_button = None
+        self.manual_print_button = None
         self.right_label_second_row = None
 
         #Printing and path
@@ -289,6 +290,8 @@ class MainApp:
             self.tk.bind('<space>', self.on_spacebar)
             # Bind the Down Arrow key to open the Manual Window
             self.tk.bind('<Down>', lambda event: self.open_manual_window())
+            # Opens manual_print_window
+            self.tk.bind("<Up>", lambda event: self.open_manual_print_window())
 
             # Manual Window
             self.manual_window = None
@@ -364,7 +367,7 @@ class MainApp:
 
             self.manual_button = tk.Button(
                 button_frame,
-                text="Manual",
+                text="Manual Check",
                 command=self.open_manual_window
             )
             self.manual_button.pack(side="left", padx=10)
@@ -377,6 +380,13 @@ class MainApp:
             )
             self.flip_button.pack(side="left", padx=10)
 
+            self.manual_print_button = tk.Button(
+                button_frame,
+                text="Manual Print",
+                command=self.open_manual_print_window
+            )
+
+            self.manual_print_button.pack(side="left", padx=10)
 
         except Exception as e:
             logging.error(f"UI creation error: {str(e)}")
@@ -1116,7 +1126,7 @@ class MainApp:
         self.tk.after(10, self.update_video)
 
 
-    def load_last4_data(self, filepath="last4.csv"):
+    def load_last4_data(self):
         """
         Loads data from the given CSV file and initializes the `self.last4` attribute.
         Each row contains the last 4 digits of a serial number and the corresponding model name.
@@ -1130,16 +1140,16 @@ class MainApp:
                                If the file is not found or an error occurs, an empty list is assigned.
         """
         try:
-            with open(filepath, mode='r') as file:
+            with open(self.csv_filepath, mode='r') as file:
                 reader = csv.reader(file)
                 # Populate self.last4 with tuples (last_4_serial, model_name)
                 self.last4 = [(row[0], row[1]) for row in reader]
-                self.log_event(f"Loaded {len(self.last4)} entries from {filepath}.")
+                self.log_event(f"Loaded {len(self.last4)} entries from {self.csv_filepath}.")
         except FileNotFoundError:
-            self.log_event(f"File {filepath} not found. Please ensure it is placed in the correct folder.")
+            self.log_event(f"File {self.csv_filepath} not found. Please ensure it is placed in the correct folder.")
             self.last4 = []  # Reset to an empty list on error
         except Exception as e:
-            self.log_event(f"An error occurred while loading {filepath}: {e}")
+            self.log_event(f"An error occurred while loading {self.csv_filepath}: {e}")
             self.last4 = []  # Reset to an empty list on error
 
 
@@ -1180,7 +1190,7 @@ class MainApp:
             self.log_event(f"Starting processing for Serial Number: {serial_number}")
 
             # Load the database (last4.csv)
-            self.load_last4_data("last4.csv")
+            self.load_last4_data()
 
             # Update instance-level variables
             self.frame_queue = Queue()
@@ -1639,18 +1649,192 @@ class MainApp:
         # Bind Enter key to the serial submission function
         self.manual_window.bind('<Return>', lambda event: self.submit_serial())
 
+        cancel_button = tk.Button(self.manual_window, text="Cancel", command=lambda: self.on_manual_window_close())
+        cancel_button.grid(row=1, column=1, pady=10, sticky="e")
+
         # Button to manually validate and check the serial
         check_button = tk.Button(self.manual_window, text="Check", command=lambda: self.submit_serial())
-        check_button.grid(row=1, column=1, pady=10, sticky="e")
+        check_button.grid(row=1, column=2, pady=10, sticky="e")
 
-        # Optionally include the "Bypass Check" feature as a commented example
-        # bypass_button = tk.Button(self.manual_window, text="Bypass Check", command=lambda: submit_serial(True))
-        # bypass_button.grid(row=1, column=2, pady=10, sticky="e")
 
         # Set up the behavior when the manual window is closed
         self.manual_window.protocol("WM_DELETE_WINDOW", self.on_manual_window_close)
 
+    ###
+    def print_selected_model(self):
+        self.generate_label(None,self.manual,None,None,None,None,None,None,None,None,None,None)
+        #self.manual_print_window.destroy()  # Close the manual print window
+        #self.tk.attributes('-topmost', True)  # Restore main window's "always on top" property
+#########
 
+    def open_manual_print_window(self):
+        """
+        Opens the manual print configuration window.
+        Adds functionality to scroll up and down using the mouse wheel and scrollbar.
+        """
+        # Destroy existing manual_print_window if it exists
+        if hasattr(self, "manual_print_window") and self.manual_print_window.winfo_exists():
+            self.manual_print_window.destroy()
+
+        # Load the last4 data
+        self.load_last4_data()
+
+        # Create a new pop-up window
+        self.manual_print_window = tk.Toplevel(self.tk)
+        self.manual_print_window.title("Manual Print")
+        self.manual_print_window.geometry("500x500")
+        self.manual_print_window.resizable(True, True)
+
+        # Set focus and make it transient
+        self.manual_print_window.focus_force()
+        self.manual_print_window.transient(self.tk)
+        self.manual_print_window.grid_rowconfigure(1, weight=1)
+        self.manual_print_window.grid_columnconfigure(1, weight=1)
+
+        # ======= Filter Entry Frame =======
+        filter_frame = tk.Frame(self.manual_print_window)
+        filter_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        filter_frame.grid_columnconfigure(0, weight=1)
+        filter_frame.grid_columnconfigure(1, weight=0)
+
+        tk.Label(filter_frame, text="Filter Models:", font=("Arial", 14)).grid(row=0, column=0, sticky="w")
+        self.filter_entry = tk.Entry(filter_frame, font=("Arial", 14))
+        self.filter_entry.grid(row=1, column=0, sticky="ew", pady=5)
+        self.filter_entry.focus_set()
+
+        # Add the Print button to the right of the filter entry
+        print_button = tk.Button(filter_frame, text="Print", font=("Arial", 14), command=self.print_selected_model)
+        print_button.grid(row=1, column=1, padx=(10, 0), sticky="e")
+
+        # ======= Scrollable List Frame =======
+        list_frame = tk.Frame(self.manual_print_window)
+        list_frame.grid(row=1, column=0, padx=(10, 20), pady=10, sticky="nsew")
+
+        # Configure resizing behavior
+        self.manual_print_window.grid_rowconfigure(1, weight=1)
+        self.manual_print_window.grid_columnconfigure(0, weight=1)
+
+        # Create the canvas widget for scrolling
+        canvas = tk.Canvas(list_frame, highlightthickness=0)
+        scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set, width=400)
+
+        # Place widgets in the grid
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, padx=(0, 10), sticky="ns")
+
+        # Create a content frame inside the canvas for scrolling
+        content_frame = tk.Frame(canvas)
+        canvas.create_window((0, 0), window=content_frame, anchor="nw")
+
+        # Adjust scrollregion dynamically when the content_frame is resized
+        def update_scrollregion(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        content_frame.bind("<Configure>", update_scrollregion)
+
+        # ======= Mouse Wheel Scrolling =======
+        def _on_mousewheel(event):
+            """Mouse wheel scrolling for canvas."""
+            if event.delta > 0:  # Scrolling up
+                canvas.yview_scroll(-1, "units")
+            elif event.delta < 0:  # Scrolling down
+                canvas.yview_scroll(1, "units")
+
+        def _on_mac_scroll(event):
+            """Handle scrolling for Macs where MouseWheel isn't available."""
+            if event.num == 4:  # Scroll up
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:  # Scroll down
+                canvas.yview_scroll(1, "units")
+
+        # Bind the mouse wheel events for both Windows/Linux and macOS
+        self.manual_print_window.bind_all("<MouseWheel>", _on_mousewheel)  # Windows/Linux
+        self.manual_print_window.bind_all("<Button-4>", _on_mac_scroll)  # macOS Scroll Up
+        self.manual_print_window.bind_all("<Button-5>", _on_mac_scroll)  # macOS Scroll Down
+
+        # ======= Populate Model List =======
+        self.update_model_list(content_frame)
+
+        # Bind the filter entry to dynamically refresh the model list
+        self.filter_entry.bind("<KeyRelease>", lambda event: self.update_model_list(content_frame))
+
+        # ======= Cancel Button =======
+        cancel_button = tk.Button(self.manual_print_window, text="Cancel", command=self.close_manual_print_window)
+        cancel_button.grid(row=2, column=0, pady=10)
+
+        # ======= Key Bindings =======
+        # Close the window with Esc key
+        self.manual_print_window.bind("<Escape>", lambda event: self.close_manual_print_window())
+
+        # Print the selected model with Enter key
+        self.manual_print_window.bind("<Return>", lambda event: self.print_selected_model())
+
+    def update_model_list(self, content_frame):
+        """
+        Updates and displays the model list in the given content_frame.
+        Implements functionality to select a model from the list.
+        """
+        # Ensure self.last4 is not empty
+        if not hasattr(self, 'last4') or not self.last4:
+            return
+
+        # Get the raw filter text entered by the user
+        filter_text = self.filter_entry.get().strip().lower()  # Convert to lowercase for case-insensitivity
+        filter_keywords = filter_text.split()  # Split into individual keywords
+
+        # Extract model names from the last4 data (unique & sorted)
+        models = sorted(set(item[1] for item in self.last4 if len(item) > 1))
+
+        # Apply filtering logic: Match all keywords
+        if filter_keywords:
+            models = [
+                model for model in models
+                if all(keyword in model.lower() for keyword in filter_keywords)  # Match each keyword case-insensitively
+            ]
+
+        # Clear the existing content in the content_frame
+        for widget in content_frame.winfo_children():
+            widget.destroy()
+
+        # Get the default background color of the manual_print_window
+        default_bg = self.manual_print_window.cget("bg")
+
+        # Functionality to select a model
+        def select_model(event, model_name):
+            # Remove highlight from previously selected label
+            if hasattr(self, "selected_label") and self.selected_label:
+                self.selected_label.config(bg=default_bg)
+
+            # Highlight the newly selected label
+            event.widget.config(bg="lightblue")
+            self.selected_label = event.widget
+            self.manual = model_name  # Save the selected model
+
+        # Add the filtered models back to the content_frame
+        self.selected_label = None  # Initialize selected_label
+        for model in models:
+            label = tk.Label(
+                content_frame,
+                text=model,
+                anchor="w",
+                font=("Arial", 14),
+                bg=default_bg,  # Make the background match the window bg
+                relief="flat",  # Remove the border (set to "flat")
+                bd=0  # Border width is 0 (removing the border entirely)
+            )
+            label.pack(fill="x", padx=5, pady=2)
+
+            # Bind click events to handle selection
+            label.bind("<Button-1>", lambda event, model_name=model: select_model(event, model_name))
+
+    def close_manual_print_window(self):
+        """Closes the manual print window and returns focus to the main application."""
+        if hasattr(self, "manual_print_window") and self.manual_print_window.winfo_exists():
+            self.manual_print_window.destroy()
+
+        # Return focus to the main application window
+        self.tk.focus_force()
 
     def toggle_flip(self):
         """
