@@ -609,7 +609,7 @@ class MainApp:
             logging.error(f"Error occurred while fetching data from URL: {e}")
             return None
 
-    def spec_check(self, serial_number):
+    def spec_check_macfinder(self, serial_number: str):
         """
         Fetch and parse MacBook system specifications based on the serial number.
 
@@ -666,6 +666,115 @@ class MainApp:
             logging.error(f"Error occurred while parsing data: {e}")
             return None
 
+    def spec_check_techable(self, serial_number: str):
+        """
+        Retrieves the specifications of the computer based on its serial number
+        from https://techable.com/pages/mac-lookup?search=<serial_number>.
+        Focuses on the first result in the 'Matching Devices' section.
+        Extracts and returns Processor and Memory information using Chrome.
+        """
+        import os
+        import time
+        from selenium import webdriver
+        from selenium.webdriver.chrome.service import Service
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from bs4 import BeautifulSoup
+        import logging
+
+        # Build the URL with the serial number
+        url = f"https://techable.com/pages/mac-lookup?search={serial_number}"
+        temp_html2 = os.path.join(self.temp_dir, "techable_info_rendered_debug.html")
+
+        # Set up Chrome WebDriver options
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless")  # Run in headless mode for automated processing
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument(
+            "user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.7103.114 Safari/537.36")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
+
+        # Path to ChromeDriver
+        chromedriver_path = "/opt/homebrew/bin/chromedriver"
+
+        # Create WebDriver Service
+        service = Service(chromedriver_path)
+
+        try:
+            # Initialize Selenium Chrome WebDriver
+            driver = webdriver.Chrome(service=service, options=options)
+
+            print(f"Opening URL: {url}")
+            driver.get(url)
+
+            # Allow page to stabilize
+            time.sleep(5)  # Optional pause to observe browser behavior before waiting
+
+            print("Waiting for 'ig_filter_result' content to load...")
+            # Wait until the content is visible (timeout after 40 seconds)
+            WebDriverWait(driver, 40).until(
+                EC.visibility_of_element_located((By.ID, "ig_filter_result"))
+            )
+            print("'ig_filter_result' section is now visible!")
+
+            # Save rendered HTML for debugging
+            # Commented out: Uncomment this for saving raw HTML during debugging
+            # print(f"Saving rendered HTML to {temp_html2}...")
+            # with open(temp_html2, "w") as file:
+            #     file.write(driver.page_source)
+            # print(f"Page source saved to: {temp_html2}")
+
+            # Parse the dynamically rendered HTML with BeautifulSoup
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+
+            # Locate the `ig_filter_result` block
+            matching_devices_section = soup.find('div', {'id': 'ig_filter_result'})
+            if not matching_devices_section:
+                logging.warning(f"No matching devices found for serial: {serial_number}")
+                return None
+
+            # Extract the table for the first device
+            first_device = matching_devices_section.find('table')
+            if not first_device:
+                logging.warning(f"No matching devices table found for serial: {serial_number}")
+                return None
+
+            # Extract Processor (CPU Frequency + Processor Model) for the first device
+            processor_frequency = first_device.find(string="CPU Frequency")
+            processor_model = first_device.find(string="Processor Model")
+            if processor_frequency:
+                processor_frequency = processor_frequency.find_next('td').text.strip()
+            if processor_model:
+                processor_model = processor_model.find_next('td').text.strip()
+
+
+            if processor_frequency or processor_model:
+                processor = f"{processor_frequency} {processor_model}"
+                #print(f"CPU: {processor}")
+            else:
+                print("Processor information not found")
+
+            # Extract Memory (RAM) for the first device
+            memory = first_device.find(string="RAM")
+            memory = memory.find_next('td').text.strip() if memory else "Memory information not found"
+            #print(f"RAM: {memory}")
+            # Return the extracted specifications
+            return (processor, memory)
+
+        except Exception as e:
+            logging.error(f"Error occurred while fetching specifications: {e}")
+            return None
+
+        finally:
+            # Ensure the browser gets closed
+            if 'driver' in locals():
+                driver.quit()
+            print("Driver closed.")
+
     def add_to_frame_queue(self,frame):
         try:
             # Limit queue size to prevent memory buildup
@@ -705,7 +814,7 @@ class MainApp:
             logging.error(f"An error occurred while writing to {self.csv_filepath}: {e}")
             return False
 
-    def generate_label(self, serial_number, model_name, cpu, gpu, ram, ssd, icloud, mdm, config, model_name_sickw):
+    def generate_label(self, serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config, model_name_sickw):
             """
             Generates a label, saves it as PDF, and sends it to the printer.
 
@@ -741,6 +850,7 @@ class MainApp:
                     {"<br>" + serial_number if serial_number else ""} {" iCloud " + icloud if icloud else ""} {" MDM " + mdm if mdm else ""}
                     {"<br>" + config if config else ""} {model_name_sickw if model_name_sickw else ""}
                     {"<br>" + cpu if cpu else ""} {" " + gpu if gpu else ""} {" " + ram if ram else ""} {" " + ssd if ssd else ""}
+                    {"<br>" + cpu2 if cpu2 else ""} {" " + ram2 if ram2 else ""}
                 </div></body></html>"""
 
                 # Write the HTML content to an HTML file
@@ -758,8 +868,8 @@ class MainApp:
 
                 # Print the PDF file using the lp (line printer) command
                 #run(f"lp -o fit-to-page -o media=Custom.4x1in -p {PRINTER_NAME} '{pdf_path}'", shell=True)
-                #print_command = f"lp -o fit-to-page -o media=Custom.4x1in -p {self.printer_name} '{pdf_path}'"
-                #run(print_command, shell=True, check=True)
+                print_command = f"lp -o fit-to-page -o media=Custom.4x1in -p {self.printer_name} '{pdf_path}'"
+                run(print_command, shell=True, check=True)
                 logging.info(f"Sent PDF to printer: {self.printer_name}")
 
                 # Cleanup: remove the temporary HTML file
@@ -1073,9 +1183,7 @@ class MainApp:
             self.load_last4_data("last4.csv")
 
             # Update instance-level variables
-            self.serial = serial_number
-            self.processed_frame_count = 0
-            #self.frame_queue = Queue()
+            self.frame_queue = Queue()
 
             # Clear all frames from the queue
             while not self.frame_queue.empty():
@@ -1084,7 +1192,13 @@ class MainApp:
                 except Empty:
                     break
 
+            # Clear buffer after processing
+            if self.collected_serials:
+                self.collected_serials.clear()
+
             # Update the UI
+            self.serial = serial_number
+            self.processed_frame_count = 0
             #self.tk.after(50, lambda: self.right_label_second_row.config(
             #    text=f"Processed Frames: {self.processed_frame_count}   Frames in Queue: {self.frame_queue.qsize()}",
             #    anchor="e")
@@ -1098,6 +1212,8 @@ class MainApp:
             gpu = None
             ram = None
             ssd = None
+            cpu2 = None
+            ram2 = None
             icloud = None
             mdm = None
             config = None
@@ -1123,22 +1239,39 @@ class MainApp:
                 if model_name:
                         self.write_last4_to_csv(last_4_digits, model_name)
 
-            # Perform a spec check
-            specs = self.spec_check(serial_number)
-            if specs:
-                cpu, gpu, ram, ssd = specs
+            # Perform a spec check at first source
+            specs1 = self.spec_check_macfinder(serial_number)
+            if specs1:
+                cpu, gpu, ram, ssd = specs1
                 if cpu:
                     self.log_event(
-                        f"Spec Check: {serial_number} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}"
+                        f"Spec Check Source 1 : {serial_number} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | SSD: {ssd}"
                     )
                 else:
                     self.log_event(
-                        f"Could not find spec info (VALID serial number) for serial: {serial_number}"
+                        f"Spec Check Source 1 : Could not find spec info (VALID serial number) for serial: {serial_number}"
                     )
             else:
                 self.log_event(
-                    f"Could not find spec info (INVALID serial number) for serial: {serial_number}"
+                    f"Spec Check Source 1 : Could not find spec info (INVALID serial number) for serial: {serial_number}"
                 )
+
+            specs2 = self.spec_check_techable(serial_number)
+            if specs2:
+                cpu2, ram2 = specs2
+                if cpu2:
+                    self.log_event(
+                        f"Spec Check Source 2 : {serial_number} | CPU: {cpu2} | RAM: {ram2}"
+                    )
+                else:
+                    self.log_event(
+                        f"Spec Check Source 2 : Could not find spec info (VALID serial number) for serial: {serial_number}"
+                    )
+            else:
+                self.log_event(
+                    f"Spec Check Source 2 : Could not find spec info (INVALID serial number) for serial: {serial_number}"
+                )
+
 
             # Perform an iCloud and MDM check (if required)
             if self.check_type:
@@ -1151,7 +1284,7 @@ class MainApp:
                     )
 
             # Generate and display the label
-            self.generate_label(serial_number, model_name, cpu, gpu, ram, ssd, icloud, mdm, config, model_name_sickw)
+            self.generate_label(serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config, model_name_sickw)
 
         except Exception as e:
             self.log_event(f"Error in main_check: {e}")
@@ -1285,7 +1418,7 @@ class MainApp:
         The function monitors the `stop_ocr_processing_event` to gracefully exit.
         """
         self.log_event("OCR Processing started")
-        collected_serials = []  # Buffer to collect serials
+        self.collected_serials = []  # Buffer to collect serials
         while not self.stop_ocr_processing_event.is_set():
             if self.stop_event.is_set():  # Stop if the global stop event is set
                 break
@@ -1310,16 +1443,15 @@ class MainApp:
                         serials, _, _ = self.extract_matches(texts)
                         if serials:
                             # Add new serials to buffer, maintaining uniqueness
-                            collected_serials.extend(serials)
+                            self.collected_serials.extend(serials)
 
                             # If sufficient serials are collected, identify the most common one
-                            if len(collected_serials) >= self.total_serials_processing_limit:  # Threshold for determining the most common serial
-                                most_common_serial = self.most_common(collected_serials)
+                            if len(self.collected_serials) >= self.total_serials_processing_limit:  # Threshold for determining the most common serial
+                                most_common_serial = self.most_common(self.collected_serials)
                                 if most_common_serial:
                                     self.log_event(f"Processing most common serial: {most_common_serial}")
                                     # Process the most common serial
                                     self.main_check(most_common_serial)
-                                collected_serials = []  # Clear buffer after processing
                                 # Limit frame polling frequency
 
                 else:
