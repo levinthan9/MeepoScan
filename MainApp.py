@@ -758,8 +758,8 @@ class MainApp:
 
                 # Print the PDF file using the lp (line printer) command
                 #run(f"lp -o fit-to-page -o media=Custom.4x1in -p {PRINTER_NAME} '{pdf_path}'", shell=True)
-                print_command = f"lp -o fit-to-page -o media=Custom.4x1in -p {self.printer_name} '{pdf_path}'"
-                run(print_command, shell=True, check=True)
+                #print_command = f"lp -o fit-to-page -o media=Custom.4x1in -p {self.printer_name} '{pdf_path}'"
+                #run(print_command, shell=True, check=True)
                 logging.info(f"Sent PDF to printer: {self.printer_name}")
 
                 # Cleanup: remove the temporary HTML file
