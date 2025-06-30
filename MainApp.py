@@ -192,7 +192,7 @@ class MainApp:
 
         # Initialize Regex patterns
         self.serial_pattern = re.compile(r'\b[A-Z0-9]{10,12}\b')
-        # self.serial_pattern = re.compile(r'\bSerial[:\s\-]*([A-Z0-9]{10,12})\b')
+        #self.serial_pattern = re.compile(r'\bSerial[:\s\-]*([A-Z0-9]{10,12})\b')
         self.amodel_pattern = re.compile(r'\bA\d{4}\b')
         self.emc_pattern = re.compile(r'\bEMC\s(\d{4})\b')
 
@@ -722,11 +722,11 @@ class MainApp:
             driver.get(url)
 
             # Allow page to stabilize
-            time.sleep(5)  # Optional pause to observe browser behavior before waiting
+            time.sleep(0.5)  # Optional pause to observe browser behavior before waiting
 
             print("Waiting for 'ig_filter_result' content to load...")
             # Wait until the content is visible (timeout after 40 seconds)
-            WebDriverWait(driver, 40).until(
+            WebDriverWait(driver, 5).until(
                 EC.visibility_of_element_located((By.ID, "ig_filter_result"))
             )
             print("'ig_filter_result' section is now visible!")
@@ -1266,24 +1266,27 @@ class MainApp:
                     f"Spec Check Source 1 : Could not find spec info (INVALID serial number) for serial: {serial_number}"
                 )
 
-            specs2 = self.spec_check_techable(serial_number)
-            if specs2:
-                cpu2, ram2 = specs2
-                if cpu2:
-                    self.log_event(
-                        f"Spec Check Source 2 : {serial_number} | CPU: {cpu2} | RAM: {ram2}"
-                    )
-                else:
-                    self.log_event(
-                        f"Spec Check Source 2 : Could not find spec info (VALID serial number) for serial: {serial_number}"
-                    )
-            else:
-                self.log_event(
-                    f"Spec Check Source 2 : Could not find spec info (INVALID serial number) for serial: {serial_number}"
-                )
+            #specs2 = self.spec_check_techable(serial_number)
+            #if specs2:
+            #    cpu2, ram2 = specs2
+            #    if cpu2:
+            #        self.log_event(
+            #            f"Spec Check Source 2 : {serial_number} | CPU: {cpu2} | RAM: {ram2}"
+            #        )
+            #    else:
+            #        self.log_event(
+            #            f"Spec Check Source 2 : Could not find spec info (VALID serial number) for serial: {serial_number}"
+            #        )
+            #else:
+            #    self.log_event(
+            #        f"Spec Check Source 2 : Could not find spec info (INVALID serial number) for serial: {serial_number}"
+            #    )
+            cpu2 = None
+            ram2 = None
 
 
             # Perform an iCloud and MDM check (if required)
+            #print(self.check_type)
             if self.check_type:
                 icloud_info = self.icloudCheck(serial_number)
                 if icloud_info:
@@ -1411,7 +1414,7 @@ class MainApp:
                 if results:
                     for observation in results:
                         confidence = observation.confidence()
-                        if confidence > 0.5:  # Confidence threshold
+                        if confidence > 0.4:  # Confidence threshold
                             candidates = observation.topCandidates_(10)
                             if candidates and len(candidates):
                                 recognized_text = candidates[0].string()
