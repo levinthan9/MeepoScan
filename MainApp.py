@@ -101,6 +101,8 @@ import numpy as np
 # System-level imports are listed first, followed by third-party packages,
 # and finally application-specific imports.
 
+import pytz
+
 
 ############
 ##MAIN APP##
@@ -139,6 +141,9 @@ class MainApp:
 
             # Create UI elements
             self.create_ui()
+
+            #Load batch_scanning_flag
+            self.load_batch_scanning_flag()
 
             # autostart
             if self.autostart:
@@ -188,6 +193,7 @@ class MainApp:
         self.flip_active = True
         self.manual_stop = False
         self.manual_window = None
+        self.batch_scanning = False
 
 
         # Initialize Regex patterns
@@ -899,6 +905,45 @@ class MainApp:
                     logging.info(f"Removed HTML file during error cleanup: {html_path}")
                 return False  # Operation failed
 
+    def export_to_google_sheets(self, serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config,
+                                model_name_sickw):
+        try:
+            url = "https://script.google.com/macros/s/AKfycbzWODyfuhHEl0O82rqjW1MvNJkFROR_QApdOtwIXecxWKBOCI7Ug_Q-MGOL2wKFnkmpTw/exec"  # Replace this with your Web App URL
+
+            # Format datetime in Los Angeles timezone
+            tz = pytz.timezone("America/Los_Angeles")
+            now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+
+            payload = {
+                "api_key": "af113332726071232a35asddc409dfd9e75da0",
+                "timestamp": now,
+                "serial_number": serial_number,
+                "model_name": model_name,
+                "cpu": cpu,
+                "gpu": gpu,
+                "ram": ram,
+                "ssd": ssd,
+                "cpu2": cpu2,
+                "ram2": ram2,
+                "icloud": icloud,
+                "mdm": mdm,
+                "config": config,
+                "model_name_sickw": model_name_sickw
+            }
+
+            response = requests.post(url, json=payload)
+
+            if response.status_code == 200 and response.text.strip() == "Success":
+                logging.info(f"Row successfully added for serial: {serial_number}")
+                return True
+            else:
+                logging.error(f"Failed to post to sheet: {response.status_code} - {response.text}")
+                return False
+
+        except Exception as e:
+            logging.error(f"Failed to export to Google Sheet: {e}")
+            return False
+
     def is_duplicate(self, key):
         """
         Check if a key is a duplicate within a specified timeout.
@@ -1152,6 +1197,24 @@ class MainApp:
             self.log_event(f"An error occurred while loading {self.csv_filepath}: {e}")
             self.last4 = []  # Reset to an empty list on error
 
+    def load_batch_scanning_flag(self):
+        """
+        Load the 'batch_scanning' flag from config.txt in the same directory as the script.
+        Returns:
+            bool: True if batch_scanning is 'yes', False otherwise.
+        """
+        try:
+            # Get path to config.txt in the same folder as this script
+            config_path = os.path.join(os.path.dirname(__file__), "config.txt")
+            with open(config_path, "r") as file:
+                for line in file:
+                    if line.strip().startswith("batch_scanning="):
+                        value = line.strip().split("=")[1].lower()
+                        self.batch_scanning = (value == "true")
+                        return self.batch_scanning
+        except Exception as e:
+            self.log_event(f"Failed to load batch_scanning flag: {e}")
+        return False  # Default to False if not set or file not found
 
     def main_check(self, serial_number):
         """
@@ -1167,7 +1230,7 @@ class MainApp:
             bypass (bool): Whether to bypass certain checks.
         """
         try:
-
+            print(self.batch_scanning)
             # Early return if no serial number
             if not serial_number:
                 return
@@ -1263,28 +1326,25 @@ class MainApp:
                     )
             else:
                 self.log_event(
-                    f"Spec Check Source 1 : Could not find spec info (INVALID serial number) for serial: {serial_number}"
+                    f"Spec Check Source 1 : Could not find spec info (INVALID serial number) for serial: {serial_number} at MacFinder. Trying at techable..."
                 )
-
-            #specs2 = self.spec_check_techable(serial_number)
-            #if specs2:
-            #    cpu2, ram2 = specs2
-            #    if cpu2:
-            #        self.log_event(
-            #            f"Spec Check Source 2 : {serial_number} | CPU: {cpu2} | RAM: {ram2}"
-            #        )
-            #    else:
-            #        self.log_event(
-            #            f"Spec Check Source 2 : Could not find spec info (VALID serial number) for serial: {serial_number}"
-            #        )
-            #else:
-            #    self.log_event(
-            #        f"Spec Check Source 2 : Could not find spec info (INVALID serial number) for serial: {serial_number}"
-            #    )
-            cpu2 = None
-            ram2 = None
-
-
+                specs2 = self.spec_check_techable(serial_number)
+                if specs2:
+                    cpu2, ram2 = specs2
+                    if cpu2:
+                        self.log_event(
+                            f"Spec Check Source 2 at techable: {serial_number} | CPU: {cpu2} | RAM: {ram2}"
+                        )
+                    else:
+                        self.log_event(
+                            f"Spec Check Source 2 at techable : Could not find spec info (VALID serial number) for serial: {serial_number}"
+                        )
+                else:
+                    self.log_event(
+                        f"Spec Check Source 2 at techable: Could not find spec info (INVALID serial number) for serial: {serial_number}"
+                    )
+            #cpu2 = None
+            #ram2 = None
             # Perform an iCloud and MDM check (if required)
             #print(self.check_type)
             if self.check_type:
@@ -1298,7 +1358,8 @@ class MainApp:
 
             # Generate and display the label
             self.generate_label(serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config, model_name_sickw)
-
+            if self.batch_scanning:
+                export_to_google_sheets(serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config, model_name_sickw)
         except Exception as e:
             self.log_event(f"Error in main_check: {e}")
 
@@ -1548,7 +1609,12 @@ class MainApp:
                 # Update the status text
                 self.status_text_core = "Checking For iCloud and MDM Lock" if self.check_type else "Checking Spec Only"
                 status_text = f"^^^^^^  {self.status_text_core}  ^^^^^^"
-                color = (0, 0, 255) if self.check_type else (0, 255, 0)
+                status_color = (0, 0, 255) if self.check_type else (0, 255, 0)
+
+                # Update the batch_scanning text
+                self.batch_scanning_core = "^^^^^^  Batch Scanning Mode  ^^^^^^" if self.batch_scanning else ""
+                batch_scanning_text = f"{self.batch_scanning_core}"
+                batch_scanning_color = (214, 24, 182)
 
                 # Get frame dimensions
                 frame_h, frame_w = self.feed_frame_zoom_out.shape[:2]
@@ -1569,9 +1635,11 @@ class MainApp:
                 status_thickness = 2
                 status_x = center_text_x(status_text, cv2.FONT_HERSHEY_SIMPLEX, status_scale, status_thickness)
                 status_y = roi_y + roi_h + 40
+                cv2.putText(self.feed_frame_zoom_out, batch_scanning_text, (status_x, status_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, status_scale, batch_scanning_color, status_thickness, cv2.LINE_AA)
+                status_y = status_y + 40
                 cv2.putText(self.feed_frame_zoom_out, status_text, (status_x, status_y),
-                            cv2.FONT_HERSHEY_SIMPLEX, status_scale, color, status_thickness, cv2.LINE_AA)
-
+                            cv2.FONT_HERSHEY_SIMPLEX, status_scale, status_color, status_thickness, cv2.LINE_AA)
                 time.sleep(0.1)  # Add delay to control the frame processing frequency
 
             # Release the camera resource
