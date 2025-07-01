@@ -1359,7 +1359,7 @@ class MainApp:
             # Generate and display the label
             self.generate_label(serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config, model_name_sickw)
             if self.batch_scanning:
-                export_to_google_sheets(serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config, model_name_sickw)
+                self.export_to_google_sheets(serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config, model_name_sickw)
         except Exception as e:
             self.log_event(f"Error in main_check: {e}")
 
