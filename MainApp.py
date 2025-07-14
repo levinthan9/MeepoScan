@@ -1083,6 +1083,65 @@ class MainApp:
         # Return the extracted values
         return icloud, mdm, config, model_name_sickw
 
+    def sickwspecCheck(self, serial_number):
+        import re
+        import json
+
+        # Load API key using the instance method
+        apikey = self.load_api_key()
+        if not apikey:
+            self.log_event("API key is missing. Cannot proceed with iCloud check.")
+            return "", "", "", ""
+
+        # Build API URL using the loaded API key
+        api_url = f"https://sickw.com/api.php?format=json&key={apikey}&imei={serial_number}&service=30"
+
+        # Initialize default values
+        icloud = ""
+        mdm = ""
+        config = ""
+        model_name_sickw = ""
+        response_code = "Unknown"  # Default value for response code
+
+        try:
+            # Use curl to fetch the API response and log the HTTP status code
+            curl_command = f"curl -s -k -w '%{{http_code}}' --connect-timeout 60 --max-time 60 '{api_url}'"
+            response = self.run_command(curl_command)  # Use the instance method to run the command
+
+            # Separate the HTTP status code from the response content
+            response_code = response[-3:]  # Last three characters are the HTTP status code
+            response_body = response[:-3]  # All characters before the status code
+
+            # Log the HTTP response code
+            self.log_event(f"HTTP Response Code: {response_code}")
+
+            # Parse the response JSON
+            response_data = json.loads(response_body)
+
+            # Extract raw result HTML from the `result` field
+            raw_result = response_data.get("result", "")
+            #raw_result = {"result":"Model Description: MBP\n15.4\\/2.5GHZ\\/16GB\\/512GB-USA<br>Model: MacBook Pro (Retina, 15-inch, Mid 2015) Silver Wi-Fi [MacBookPro11,4]<br>Serial Number: C02Q7LV7G8WP<br>Estimated Purchase Date: 2015-09-24<br>Warranty Status:\n<font color=\\\"red\\\">Out Of Warranty<\\/font> <br>iCloud Lock: <font color=\\\"orange\\\">OFF<\\/font> <br>Demo Unit: <font\n\t\t\t\t\t\tcolor=\\\"green\\\">No<\\/font> <br>Loaner Device: <font color=\\\"green\\\">No<\\/font> <br>Replaced Device:\n\t\t\t\t\t\t\t\t<font color=\\\"green\\\">No<\\/font> <br>Replacement Device: <font color=\\\"green\\\">No\n\t\t\t\t\t\t\t\t\t\t<\\/font> <br>Refurbished Device: <font color=\\\"green\\\">No<\\/font> <br>\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tPurchase Country: United\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tStates<br>Locked Carrier: N\\/A (Wi-Fi Device)<br>Sim-Lock Status: N\\/A<br>","imei":"C02Q7LV7G8WP","balance":"395.26","price":"0.03","id":"132820728","status":"success","ip":"73.241.183.37"}.get("result", "")
+
+            # Extract configuration and other values
+            config_match = re.search(r"Model Description:\s*(.*?)<br>", raw_result)
+            if config_match:
+                config = config_match.group(1).strip()
+
+            # Log extracted information
+            self.log_event(
+                f"Full Check: {serial_number} | Config: {config} | "
+                f"Response Code: {response_code}"
+            )
+            #self.log_event(f"Response: {response_body}")
+
+        except json.JSONDecodeError as e:
+            self.log_event(f"Failed to parse JSON for serial number {serial_number}: {e}")
+        except Exception as e:
+            self.log_event(f"Unhandled error during iCloud check for {serial_number}: {e}")
+
+        # Return the extracted values
+        return icloud, mdm, config, model_name_sickw
+
 
     def clean_common_ocr_errors(self, text):
         """
@@ -1313,7 +1372,7 @@ class MainApp:
                         self.write_last4_to_csv(last_4_digits, model_name)
 
             # Perform a spec check at first source
-            specs1 = self.spec_check_macfinder(serial_number)
+            '''specs1 = self.spec_check_macfinder(serial_number)
             if specs1:
                 cpu, gpu, ram, ssd = specs1
                 if cpu:
@@ -1343,6 +1402,10 @@ class MainApp:
                     self.log_event(
                         f"Spec Check Source 2 at techable: Could not find spec info (INVALID serial number) for serial: {serial_number}"
                     )
+            '''
+            sickw_spec_check=self.sickwspecCheck(serial_number)
+            if sickw_spec_check:
+                icloud, mdm, config, model_name_sickw = sickw_spec_check
             #cpu2 = None
             #ram2 = None
             # Perform an iCloud and MDM check (if required)
