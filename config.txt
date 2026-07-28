@@ -1,1 +1,3 @@
 batch_scanning=true
+inventory_api_url=https://meepo.ddns.net
+inventory_api_key=c396e3ad1e8700d8d4e166ad615b416c

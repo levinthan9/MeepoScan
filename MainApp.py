@@ -194,6 +194,8 @@ class MainApp:
         self.manual_stop = False
         self.manual_window = None
         self.batch_scanning = False
+        self.inventory_api_url = "https://meepo.ddns.net"
+        self.inventory_api_key = ""
 
 
         # Initialize Regex patterns
@@ -830,43 +832,43 @@ class MainApp:
             logging.error(f"An error occurred while writing to {self.csv_filepath}: {e}")
             return False
 
-    def generate_label(self, serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config, model_name_sickw):
+    def generate_label(self, serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config, model_name_sickw, tag=None):
             """
             Generates a label, saves it as PDF, and sends it to the printer.
-
-            Args:
-                serial_number (str): Device's serial number.
-                model_name (str): Device's model name.
-                cpu (str): CPU specifications.
-                gpu (str): GPU specifications.
-                ram (str): RAM capacity.
-                ssd (str): Storage capacity.
-                icloud (str): iCloud status.
-                mdm (str): MDM status.
-                config (str): Configuration information.
-                model_name_sickw (str): An alternative model name, if available.
-
-            Returns:
-                bool: True if the label was successfully created and printed, False otherwise.
+            When tag is provided, embeds a QR code for warehouse scanning.
             """
             html_path = os.path.join(self.output_dir, f"{serial_number}.html")
             pdf_path = os.path.join(self.output_dir, f"{serial_number}.pdf")
 
             try:
+                qr_uri = self._qr_data_uri(tag) if tag else None
+                qr_html = (
+                    f"<img class='qr' src='{qr_uri}' alt='QR {tag}' />"
+                    if qr_uri
+                    else ""
+                )
+                tag_html = f"<div class='tag'>{tag}</div>" if tag else ""
                 # Generate the HTML content for the label
                 html_content = f"""<!DOCTYPE html>
                 <html><head><style>
                     @page {{ margin: 0mm; size: 4in 1in; }}
-                    body {{ font-size: 14px; }}
-                    .bold {{ font-weight: bold; }}
-                    .model-name {{ font-size: 26px; font-weight: bold; }}
+                    body {{ margin: 0; font-size: 12px; font-family: Helvetica, Arial, sans-serif; }}
+                    .wrap {{ display: flex; align-items: center; height: 1in; width: 4in; box-sizing: border-box; padding: 0.04in 0.06in; }}
+                    .qr {{ width: 0.82in; height: 0.82in; margin-right: 0.08in; flex-shrink: 0; }}
+                    .text {{ flex: 1; text-align: center; font-weight: bold; line-height: 1.15; }}
+                    .model-name {{ font-size: 20px; font-weight: bold; }}
+                    .tag {{ font-size: 14px; letter-spacing: 0.04em; }}
                 </style></head>
-                <body><div style='text-align: center;' class='bold'>
+                <body><div class="wrap">
+                    {qr_html}
+                    <div class="text">
+                    {tag_html}
                     <span class="model-name">{model_name + "<br>" if model_name else ""}</span>
                     {"<br>" + serial_number if serial_number else ""} {" iCloud " + icloud if icloud else ""} {" MDM " + mdm if mdm else ""}
                     {"<br>" + config if config else ""} {model_name_sickw if model_name_sickw else ""}
                     {"<br>" + cpu if cpu else ""} {" " + gpu if gpu else ""} {" " + ram if ram else ""} {" " + ssd if ssd else ""}
                     {"<br>" + cpu2 if cpu2 else ""} {" " + ram2 if ram2 else ""}
+                    </div>
                 </div></body></html>"""
 
                 # Write the HTML content to an HTML file
@@ -1258,22 +1260,112 @@ class MainApp:
 
     def load_batch_scanning_flag(self):
         """
-        Load the 'batch_scanning' flag from config.txt in the same directory as the script.
-        Returns:
-            bool: True if batch_scanning is 'yes', False otherwise.
+        Load batch_scanning + inventory API settings from config.txt.
         """
         try:
-            # Get path to config.txt in the same folder as this script
             config_path = os.path.join(os.path.dirname(__file__), "config.txt")
             with open(config_path, "r") as file:
                 for line in file:
-                    if line.strip().startswith("batch_scanning="):
-                        value = line.strip().split("=")[1].lower()
-                        self.batch_scanning = (value == "true")
-                        return self.batch_scanning
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip()
+                    if key == "batch_scanning":
+                        self.batch_scanning = value.lower() == "true"
+                    elif key == "inventory_api_url":
+                        self.inventory_api_url = value.rstrip("/")
+                    elif key == "inventory_api_key":
+                        self.inventory_api_key = value
+            return self.batch_scanning
         except Exception as e:
             self.log_event(f"Failed to load batch_scanning flag: {e}")
         return False  # Default to False if not set or file not found
+
+    def _qr_data_uri(self, payload: str):
+        """Build a data-URI PNG QR for the inventory tag (warehouse scan)."""
+        if not payload:
+            return None
+        try:
+            import base64
+            import qrcode
+            from io import BytesIO
+
+            img = qrcode.make(str(payload), border=1)
+            buf = BytesIO()
+            img.save(buf, format="PNG")
+            return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+        except Exception as e:
+            logging.warning(f"QR generation unavailable: {e}")
+            return None
+
+    def export_to_inventory(
+        self,
+        serial_number,
+        model_name,
+        cpu,
+        gpu,
+        ram,
+        ssd,
+        cpu2,
+        ram2,
+        icloud,
+        mdm,
+        config,
+        model_name_sickw,
+    ):
+        """
+        Create / update inventory via Meepotek Scan In API.
+        Links to the active inspecting batch. Returns item dict (with tag) or None.
+        """
+        if not self.inventory_api_key:
+            self.log_event("inventory_api_key missing in config.txt — skipping DB import")
+            return None
+        url = f"{self.inventory_api_url}/api/inventory/scan-in"
+        payload = {
+            "serial_number": serial_number,
+            "model_name": model_name,
+            "model_name_sickw": model_name_sickw,
+            "cpu": cpu,
+            "cpu2": cpu2,
+            "gpu": gpu,
+            "ram": ram,
+            "ram2": ram2,
+            "ssd": ssd,
+            "icloud": icloud,
+            "mdm": mdm,
+            "config": config,
+            "print": True,
+            "update": True,
+        }
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                headers={"X-Inventory-Key": self.inventory_api_key},
+                timeout=60,
+            )
+            body = {}
+            try:
+                body = response.json()
+            except Exception:
+                body = {"raw": response.text}
+            if response.status_code in (200, 201, 409):
+                item = body.get("item") or {}
+                tag = item.get("tag")
+                self.log_event(
+                    f"Inventory import: {serial_number} → tag {tag} "
+                    f"(action={body.get('action')}, batch={body.get('scan_batch_id')})"
+                )
+                return item
+            self.log_event(
+                f"Inventory import failed: HTTP {response.status_code} — {body}"
+            )
+            return None
+        except Exception as e:
+            self.log_event(f"Inventory import error: {e}")
+            return None
 
     def main_check(self, serial_number):
         """
@@ -1419,10 +1511,25 @@ class MainApp:
                         f"SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} | Model: {model_name_sickw}"
                     )
 
-            # Generate and display the label
-            self.generate_label(serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config, model_name_sickw)
+            # Import to inventory DB (Scan In batch) when batch mode is on, then print QR label
+            inventory_tag = None
             if self.batch_scanning:
-                self.export_to_google_sheets(serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config, model_name_sickw)
+                item = self.export_to_inventory(
+                    serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2,
+                    icloud, mdm, config, model_name_sickw,
+                )
+                if item:
+                    inventory_tag = item.get("tag")
+                # Keep Sheets export as a secondary sync
+                self.export_to_google_sheets(
+                    serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2,
+                    icloud, mdm, config, model_name_sickw,
+                )
+
+            self.generate_label(
+                serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2,
+                icloud, mdm, config, model_name_sickw, tag=inventory_tag,
+            )
         except Exception as e:
             self.log_event(f"Error in main_check: {e}")
 
