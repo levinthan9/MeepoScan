@@ -20,7 +20,7 @@ from queue import Queue, Empty  # Queue implementation for thread-safe data exch
 # String and process handling
 import re  # Regular expression operations
 import subprocess  # Spawn and manage subprocesses
-from subprocess import run  # Direct subprocess.run import
+from subprocess import run, CalledProcessError  # Direct subprocess.run import
 import logging
 
 # System and debugging
@@ -839,6 +839,7 @@ class MainApp:
             """
             html_path = os.path.join(self.output_dir, f"{serial_number}.html")
             pdf_path = os.path.join(self.output_dir, f"{serial_number}.pdf")
+            success = False
 
             try:
                 qr_uri = self._qr_data_uri(tag) if tag else None
@@ -885,27 +886,19 @@ class MainApp:
                 logging.info(f"Generated PDF file: {pdf_path}")
 
                 # Print the PDF file using the lp (line printer) command
-                #run(f"lp -o fit-to-page -o media=Custom.4x1in -p {PRINTER_NAME} '{pdf_path}'", shell=True)
                 print_command = f"lp -o fit-to-page -o media=Custom.4x1in -p {self.printer_name} '{pdf_path}'"
                 run(print_command, shell=True, check=True)
                 logging.info(f"Sent PDF to printer: {self.printer_name}")
-
-                # Cleanup: remove the temporary HTML file
-                if os.path.exists(html_path):
-                    os.remove(html_path)
-                    logging.info(f"Removed temporary HTML file: {html_path}")
-
-                return True  # Successfully generated and printed
+                success = True
             except CalledProcessError as e:
                 logging.error(f"Command execution failed: {e}")
             except Exception as e:
                 logging.error(f"An error occurred while generating the label: {e}")
             finally:
-                # Cleanup in case of a failure
                 if os.path.exists(html_path):
                     os.remove(html_path)
-                    logging.info(f"Removed HTML file during error cleanup: {html_path}")
-                return False  # Operation failed
+                    logging.info(f"Removed temporary HTML file: {html_path}")
+            return success
 
     def export_to_google_sheets(self, serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config,
                                 model_name_sickw):
@@ -1294,7 +1287,11 @@ class MainApp:
 
             img = qrcode.make(str(payload), border=1)
             buf = BytesIO()
-            img.save(buf, format="PNG")
+            # qrcode PilImage uses kind=; plain PIL uses format=
+            try:
+                img.save(buf, kind="PNG")
+            except TypeError:
+                img.save(buf, format="PNG")
             return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
         except Exception as e:
             logging.warning(f"QR generation unavailable: {e}")
