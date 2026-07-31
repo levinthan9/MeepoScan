@@ -1473,8 +1473,8 @@ class MainApp:
         model_name_sickw,
     ):
         """
-        Create / update inventory via Meepotek Scan In API.
-        Links to the active inspecting batch.
+        Always create/update a 6-digit inventory macbook tag.
+        When batch_scanning is on, also link the item to the active Scan In vendor batch.
 
         Returns dict with item fields plus:
           _scan_action: created|updated|exists|queued|...
@@ -1498,10 +1498,15 @@ class MainApp:
             "icloud": icloud,
             "mdm": mdm,
             "config": config,
-            # Server only prints QR on action=created; never auto-reprint.
-            "print": True,
+            # MainApp prints local QR label; server must not enqueue a second print.
+            "print": False,
             "update": True,
             "reprint": False,
+            "immediate": True,
+            "pool": False,
+            # Batch mode only adds Scan In vendor linkage — tag is always allocated.
+            "link_batch": bool(self.batch_scanning),
+            "batch_scanning": bool(self.batch_scanning),
         }
         try:
             response = requests.post(
@@ -1519,33 +1524,40 @@ class MainApp:
                 item = dict(body.get("item") or {})
                 action = str(body.get("action") or "")
                 tag = item.get("tag")
-                print_qr = action == "created" and bool(tag)
+                # Always put the 6-digit tag on the MainApp label (new or existing).
+                # Never mint a second tag for the same SSN — create_macbook reuses it.
+                print_qr = bool(tag)
                 item["_scan_action"] = action
                 item["_print_qr"] = print_qr
+                item["_is_new_tag"] = action == "created"
                 item["_duplicate"] = bool(
                     body.get("duplicate") or action in ("exists", "updated")
                 )
-                if print_qr:
+                item["_batch_linked"] = bool(body.get("batch_linked"))
+                batch_note = ""
+                if body.get("batch_linked"):
+                    batch_note = f", scan-in batch={body.get('scan_batch_id')}"
+                elif body.get("batch_warning"):
+                    batch_note = f", batch not linked: {body.get('batch_warning')}"
+                if action == "created":
                     self.log_event(
-                        f"Inventory import: {serial_number} → NEW tag {tag} "
-                        f"(batch={body.get('scan_batch_id')})"
+                        f"Inventory: {serial_number} → NEW tag {tag}{batch_note}"
                     )
                 else:
                     self.log_event(
-                        f"Inventory already has {serial_number} as tag {tag} "
-                        f"(action={action}) — skipping inventory QR reprint"
+                        f"Inventory: {serial_number} → existing tag {tag} "
+                        f"(action={action}){batch_note}"
                     )
                 return item
-            # 202 = held in OCR pool; no tag yet for local QR label
             if response.status_code == 202:
                 self.log_event(
-                    f"Inventory import queued for {serial_number} "
-                    f"(pool) — local label will print without tag QR"
+                    f"Inventory queued for {serial_number} (pool) — label without tag QR"
                 )
                 return {
                     "_scan_action": "queued",
                     "_print_qr": False,
                     "_duplicate": False,
+                    "_batch_linked": False,
                 }
             self.log_event(
                 f"Inventory import failed: HTTP {response.status_code} — {body}"
@@ -1698,17 +1710,17 @@ class MainApp:
                 if sickw_spec_check:
                     icloud, mdm, config, model_name_sickw = sickw_spec_check
 
-            # Import to inventory DB (Scan In batch) when batch mode is on.
-            # Inventory QR is only printed for brand-new tags (never on rescan/reprint).
+            # Always create/update a 6-digit inventory tag for the label QR.
+            # Batch scanning additionally links the item to the active Scan In vendor.
             inventory_tag = None
+            item = self.export_to_inventory(
+                serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2,
+                icloud, mdm, config, model_name_sickw,
+            )
+            if item and item.get("tag"):
+                inventory_tag = item.get("tag")
+
             if self.batch_scanning:
-                item = self.export_to_inventory(
-                    serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2,
-                    icloud, mdm, config, model_name_sickw,
-                )
-                if item and item.get("_print_qr"):
-                    inventory_tag = item.get("tag")
-                # Keep Sheets export as a secondary sync
                 self.export_to_google_sheets(
                     serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2,
                     icloud, mdm, config, model_name_sickw,
