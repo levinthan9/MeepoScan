@@ -179,7 +179,12 @@ class MainApp:
         self.recent_matches = {}
         self.last4 = set()
         self.main_check_lock = threading.Lock()
+        # Short OCR debounce; SickW billing dedupe is sickw_cache (serial+service, persisted).
         self.duplicate_timeout = 120  # seconds
+        self.sickw_cache = {}  # (serial, service) -> (icloud, mdm, config, model_name)
+        self.sickw_cache_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), ".sickw_cache.json"
+        )
         self.feed_frame_zoom_in = None
         self.feed_frame_zoom_out = None
         self.serial = None
@@ -248,6 +253,159 @@ class MainApp:
             os.makedirs(self.output_dir)
         self.temp_dir = tempfile.gettempdir()
         self.csv_filepath="last4.csv"
+        self._load_sickw_cache()
+
+    def _load_sickw_cache(self):
+        """Load persisted SickW results so the same serial+service is never re-billed."""
+        try:
+            if not os.path.exists(self.sickw_cache_path):
+                return
+            import json
+            with open(self.sickw_cache_path, "r") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return
+            for key, value in data.items():
+                if not isinstance(value, (list, tuple)) or len(value) != 4:
+                    continue
+                parts = str(key).split("|", 1)
+                if len(parts) != 2:
+                    continue
+                serial, service = parts[0].upper(), str(parts[1])
+                self.sickw_cache[(serial, service)] = tuple(value)
+            logging.info(f"Loaded {len(self.sickw_cache)} SickW cache entries.")
+        except Exception as e:
+            logging.warning(f"Failed to load SickW cache: {e}")
+
+    def _save_sickw_cache(self):
+        try:
+            import json
+            payload = {
+                f"{serial}|{service}": list(result)
+                for (serial, service), result in self.sickw_cache.items()
+            }
+            with open(self.sickw_cache_path, "w") as f:
+                json.dump(payload, f)
+        except Exception as e:
+            logging.warning(f"Failed to save SickW cache: {e}")
+
+    def _get_sickw_cached(self, serial_number, service):
+        key = (str(serial_number or "").upper(), str(service))
+        return self.sickw_cache.get(key)
+
+    def _set_sickw_cached(self, serial_number, service, result):
+        key = (str(serial_number or "").upper(), str(service))
+        self.sickw_cache[key] = tuple(result)
+        self._save_sickw_cache()
+
+    @staticmethod
+    def _parse_sickw_field(raw_result, field_name):
+        """Extract a SickW field from dict (format=beta), HTML (<span>/<font>/<br>), or plain text."""
+        if raw_result is None or not field_name:
+            return ""
+        if isinstance(raw_result, dict):
+            target = field_name.lower()
+            for key, value in raw_result.items():
+                if str(key).lower() == target and value is not None:
+                    text = str(value).strip()
+                    return "" if text.lower() in {"none", "null", "n/a"} else text
+            return ""
+        text = str(raw_result)
+        pattern = rf"{re.escape(field_name)}:\s*(.*?)(?:<br\s*/?>|\r?\n|$)"
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return ""
+        value = re.sub(r"<[^>]+>", "", match.group(1))
+        value = re.sub(r"\s+", " ", value).strip().strip('"').strip()
+        return "" if value.lower() in {"none", "null", "n/a"} else value
+
+    @staticmethod
+    def _format_icloud_display(lock, status=""):
+        """Combine iCloud Lock + iCloud Status for labels / inventory notes."""
+        lock = (lock or "").strip()
+        status = (status or "").strip()
+        if lock and status:
+            return f"{lock}/{status}"
+        return lock or status or ""
+
+    def _extract_sickw_fields(self, raw_result):
+        """
+        Pull all relevant SickW fields used by MainApp.
+        Returns (icloud_display, mdm, config, model_name_sickw).
+        icloud_display includes Status when present (e.g. OFF/CLEAN).
+        """
+        config = self._parse_sickw_field(raw_result, "Device Configuration")
+        if not config:
+            config = self._parse_sickw_field(raw_result, "Model Description")
+
+        model_name_sickw = self._parse_sickw_field(raw_result, "Model Name")
+        if not model_name_sickw:
+            model_name_sickw = self._parse_sickw_field(raw_result, "Model")
+        if not model_name_sickw:
+            # Service 72 often returns Model Number / Part Number instead of Model Name
+            model_number = self._parse_sickw_field(raw_result, "Model Number")
+            part_number = self._parse_sickw_field(raw_result, "Part Number")
+            model_name_sickw = " ".join(p for p in (model_number, part_number) if p)
+
+        icloud_lock = self._parse_sickw_field(raw_result, "iCloud Lock")
+        icloud_status = self._parse_sickw_field(raw_result, "iCloud Status")
+        mdm = self._parse_sickw_field(raw_result, "MDM Lock")
+        icloud = self._format_icloud_display(icloud_lock, icloud_status)
+        return icloud, mdm, config, model_name_sickw
+
+    def sickw_history_lookup(self, serial_number, service):
+        """
+        Free order-history lookup (action=history). Returns the newest matching
+        service result as (icloud, mdm, config, model_name_sickw), or None.
+        Uses format=beta for structured field maps when available.
+        """
+        import json
+
+        apikey = self.load_api_key()
+        if not apikey or not serial_number:
+            return None
+        service = str(service)
+        api_url = (
+            f"https://sickw.com/api.php?format=beta&key={apikey}"
+            f"&imei={serial_number}&action=history"
+        )
+        try:
+            curl_command = (
+                f"curl -s -k -w '%{{http_code}}' --connect-timeout 60 --max-time 60 '{api_url}'"
+            )
+            response = self.run_command(curl_command)
+            response_code = response[-3:]
+            response_body = response[:-3]
+            if response_code != "200":
+                self.log_event(
+                    f"SickW history HTTP {response_code} for {serial_number}"
+                )
+                return None
+            data = json.loads(response_body)
+            history = data.get("HISTORY") or data.get("history") or []
+            if not isinstance(history, list):
+                return None
+            # Newest matching service first (API usually oldest→newest)
+            matches = [
+                row for row in history
+                if str(row.get("service", "")) == service
+                and str(row.get("status", "")).lower() == "success"
+                and row.get("result") is not None
+            ]
+            if not matches:
+                return None
+            row = matches[-1]
+            icloud, mdm, config, model_name_sickw = self._extract_sickw_fields(row.get("result"))
+            if not (icloud or mdm or config or model_name_sickw):
+                return None
+            self.log_event(
+                f"SickW history hit service={service} serial={serial_number} "
+                f"order={row.get('id')} | iCloud: {icloud} | MDM: {mdm} | Config: {config}"
+            )
+            return icloud, mdm, config, model_name_sickw
+        except Exception as e:
+            self.log_event(f"SickW history lookup failed for {serial_number}: {e}")
+            return None
 
     def log_memory_usage(self,stage):
         process = psutil.Process(os.getpid())
@@ -837,18 +995,32 @@ class MainApp:
             Generates a label, saves it as PDF, and sends it to the printer.
             When tag is provided, embeds a QR code for warehouse scanning.
             """
-            html_path = os.path.join(self.output_dir, f"{serial_number}.html")
-            pdf_path = os.path.join(self.output_dir, f"{serial_number}.pdf")
+            label_id = serial_number or tag or "label"
+            html_path = os.path.join(self.output_dir, f"{label_id}.html")
+            pdf_path = os.path.join(self.output_dir, f"{label_id}.pdf")
+            qr_path = os.path.join(self.output_dir, f"{label_id}_qr.png")
             success = False
 
             try:
-                qr_uri = self._qr_data_uri(tag) if tag else None
-                qr_html = (
-                    f"<img class='qr' src='{qr_uri}' alt='QR {tag}' />"
-                    if qr_uri
-                    else ""
-                )
+                qr_payload = tag or None
+                qr_html = ""
                 tag_html = f"<div class='tag'>{tag}</div>" if tag else ""
+                if qr_payload:
+                    if self._write_qr_png(qr_payload, qr_path):
+                        # Relative path so Chrome headless can load it next to the HTML.
+                        qr_html = (
+                            f"<img class='qr' src='{os.path.basename(qr_path)}' "
+                            f"alt='QR {qr_payload}' />"
+                        )
+                    else:
+                        self.log_event(f"QR generation failed for inventory tag {qr_payload}")
+                elif self.batch_scanning:
+                    self.log_event(
+                        f"No inventory tag for {serial_number} — label printed without QR"
+                    )
+
+                icloud_txt = f" iCloud {icloud}" if icloud else ""
+                mdm_txt = f" MDM {mdm}" if mdm else ""
                 # Generate the HTML content for the label
                 html_content = f"""<!DOCTYPE html>
                 <html><head><style>
@@ -865,7 +1037,7 @@ class MainApp:
                     <div class="text">
                     {tag_html}
                     <span class="model-name">{model_name + "<br>" if model_name else ""}</span>
-                    {"<br>" + serial_number if serial_number else ""} {" iCloud " + icloud if icloud else ""} {" MDM " + mdm if mdm else ""}
+                    {"<br>" + serial_number if serial_number else ""}{icloud_txt}{mdm_txt}
                     {"<br>" + config if config else ""} {model_name_sickw if model_name_sickw else ""}
                     {"<br>" + cpu if cpu else ""} {" " + gpu if gpu else ""} {" " + ram if ram else ""} {" " + ssd if ssd else ""}
                     {"<br>" + cpu2 if cpu2 else ""} {" " + ram2 if ram2 else ""}
@@ -880,6 +1052,7 @@ class MainApp:
                 # Convert the HTML to a PDF using headless Chrome
                 chrome_command = (
                     f"'{self.chrome_path}' --headless --disable-gpu --no-pdf-header-footer "
+                    f"--allow-file-access-from-files "
                     f"--print-to-pdf='{pdf_path}' '{html_path}'"
                 )
                 run(chrome_command, shell=True, check=True)
@@ -895,9 +1068,10 @@ class MainApp:
             except Exception as e:
                 logging.error(f"An error occurred while generating the label: {e}")
             finally:
-                if os.path.exists(html_path):
-                    os.remove(html_path)
-                    logging.info(f"Removed temporary HTML file: {html_path}")
+                for path in (html_path, qr_path):
+                    if os.path.exists(path):
+                        os.remove(path)
+                        logging.info(f"Removed temporary file: {path}")
             return success
 
     def export_to_google_sheets(self, serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config,
@@ -998,144 +1172,89 @@ class MainApp:
             logging.error(f"An error occurred while loading {filepath}: {e}")
             return None
 
-    def icloudCheck(self, serial_number):
-        """
-        Performs an iCloud check for the given serial number using a third-party API.
-
-        Args:
-            serial_number (str): The serial number to check.
-
-        Returns:
-            tuple: Contains the extracted iCloud lock, MDM lock, configuration details, and model name.
-        """
-        import re
+    def _sickw_paid_check(self, serial_number, service):
+        """Paid SickW check (single request). Uses format=json; history uses format=beta."""
         import json
 
-        # Load API key using the instance method
         apikey = self.load_api_key()
         if not apikey:
-            self.log_event("API key is missing. Cannot proceed with iCloud check.")
+            self.log_event("API key is missing. Cannot proceed with SickW check.")
             return "", "", "", ""
 
-        # Build API URL using the loaded API key
-        api_url = f"https://sickw.com/api.php?format=json&key={apikey}&imei={serial_number}&service=72"
-
-        # Initialize default values
-        icloud = ""
-        mdm = ""
-        config = ""
-        model_name_sickw = ""
-        response_code = "Unknown"  # Default value for response code
-
+        icloud = mdm = config = model_name_sickw = ""
+        # One paid call only — never retry with another format (that would re-bill).
+        api_url = (
+            f"https://sickw.com/api.php?format=json&key={apikey}"
+            f"&imei={serial_number}&service={service}"
+        )
         try:
-            # Use curl to fetch the API response and log the HTTP status code
-            curl_command = f"curl -s -k -w '%{{http_code}}' --connect-timeout 60 --max-time 60 '{api_url}'"
-            response = self.run_command(curl_command)  # Use the instance method to run the command
-
-            # Separate the HTTP status code from the response content
-            response_code = response[-3:]  # Last three characters are the HTTP status code
-            response_body = response[:-3]  # All characters before the status code
-
-            # Log the HTTP response code
+            curl_command = (
+                f"curl -s -k -w '%{{http_code}}' --connect-timeout 60 --max-time 60 '{api_url}'"
+            )
+            response = self.run_command(curl_command)
+            response_code = response[-3:]
+            response_body = response[:-3]
             self.log_event(f"HTTP Response Code: {response_code}")
-
-            # Parse the response JSON
             response_data = json.loads(response_body)
+            raw_result = response_data.get("result", "") or ""
 
-            # Extract raw result HTML from the `result` field
-            raw_result = response_data.get("result", "")
-
-            # Extract Model Name using regex
-            model_name_sickw_match = re.search(r"Model Name:\s*([^<]+)<br \/>", raw_result)
-            if model_name_sickw_match:
-                model_name_sickw = model_name_sickw_match.group(1).strip()
-
-            # Extract configuration and other values
-            config_match = re.search(r"Device Configuration:\s*([^<]+)", raw_result)
-            if config_match:
-                config = config_match.group(1).strip()
-
-            mdm_match = re.search(r"MDM Lock:\s*<font[^>]*>([^<]+)</font>", raw_result)
-            if mdm_match:
-                mdm = mdm_match.group(1).strip()
-
-            icloud_match = re.search(r"iCloud Lock:\s*<font[^>]*>([^<]+)</font>", raw_result)
-            if icloud_match:
-                icloud = icloud_match.group(1).strip()
-
-            # Log extracted information
+            icloud, mdm, config, model_name_sickw = self._extract_sickw_fields(raw_result)
             self.log_event(
-                f"Full Check: {serial_number} | Model Name: {model_name_sickw} | Config: {config} | "
+                f"Full Check: {serial_number} | service={service} | "
+                f"Model: {model_name_sickw} | Config: {config} | "
                 f"iCloud: {icloud} | MDM: {mdm} | Response Code: {response_code}"
             )
             self.log_event(f"Response: {response_body}")
 
+            status = str(response_data.get("status", "")).lower()
+            if status == "success" or icloud or mdm or config:
+                result = (icloud, mdm, config, model_name_sickw)
+                self._set_sickw_cached(serial_number, service, result)
+                return result
         except json.JSONDecodeError as e:
-            self.log_event(f"Failed to parse JSON for serial number {serial_number}: {e}")
+            self.log_event(f"Failed to parse SickW JSON for {serial_number}: {e}")
         except Exception as e:
-            self.log_event(f"Unhandled error during iCloud check for {serial_number}: {e}")
-
-        # Return the extracted values
+            self.log_event(f"Unhandled SickW error for {serial_number}: {e}")
         return icloud, mdm, config, model_name_sickw
+
+    def icloudCheck(self, serial_number):
+        """
+        iCloud/MDM check via SickW service 72.
+        Order: local cache → free order history → paid API (once).
+        """
+        service = "72"
+        cached = self._get_sickw_cached(serial_number, service)
+        if cached is not None:
+            self.log_event(
+                f"SickW cache hit service={service} serial={serial_number} "
+                f"(skipping API) | iCloud: {cached[0]} | MDM: {cached[1]} | Config: {cached[2]}"
+            )
+            return cached
+
+        history = self.sickw_history_lookup(serial_number, service)
+        if history is not None:
+            self._set_sickw_cached(serial_number, service, history)
+            return history
+
+        return self._sickw_paid_check(serial_number, service)
 
     def sickwspecCheck(self, serial_number):
-        import re
-        import json
-
-        # Load API key using the instance method
-        apikey = self.load_api_key()
-        if not apikey:
-            self.log_event("API key is missing. Cannot proceed with iCloud check.")
-            return "", "", "", ""
-
-        # Build API URL using the loaded API key
-        api_url = f"https://sickw.com/api.php?format=json&key={apikey}&imei={serial_number}&service=30"
-
-        # Initialize default values
-        icloud = ""
-        mdm = ""
-        config = ""
-        model_name_sickw = ""
-        response_code = "Unknown"  # Default value for response code
-
-        try:
-            # Use curl to fetch the API response and log the HTTP status code
-            curl_command = f"curl -s -k -w '%{{http_code}}' --connect-timeout 60 --max-time 60 '{api_url}'"
-            response = self.run_command(curl_command)  # Use the instance method to run the command
-
-            # Separate the HTTP status code from the response content
-            response_code = response[-3:]  # Last three characters are the HTTP status code
-            response_body = response[:-3]  # All characters before the status code
-
-            # Log the HTTP response code
-            self.log_event(f"HTTP Response Code: {response_code}")
-
-            # Parse the response JSON
-            response_data = json.loads(response_body)
-
-            # Extract raw result HTML from the `result` field
-            raw_result = response_data.get("result", "")
-            #raw_result = {"result":"Model Description: MBP\n15.4\\/2.5GHZ\\/16GB\\/512GB-USA<br>Model: MacBook Pro (Retina, 15-inch, Mid 2015) Silver Wi-Fi [MacBookPro11,4]<br>Serial Number: C02Q7LV7G8WP<br>Estimated Purchase Date: 2015-09-24<br>Warranty Status:\n<font color=\\\"red\\\">Out Of Warranty<\\/font> <br>iCloud Lock: <font color=\\\"orange\\\">OFF<\\/font> <br>Demo Unit: <font\n\t\t\t\t\t\tcolor=\\\"green\\\">No<\\/font> <br>Loaner Device: <font color=\\\"green\\\">No<\\/font> <br>Replaced Device:\n\t\t\t\t\t\t\t\t<font color=\\\"green\\\">No<\\/font> <br>Replacement Device: <font color=\\\"green\\\">No\n\t\t\t\t\t\t\t\t\t\t<\\/font> <br>Refurbished Device: <font color=\\\"green\\\">No<\\/font> <br>\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tPurchase Country: United\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tStates<br>Locked Carrier: N\\/A (Wi-Fi Device)<br>Sim-Lock Status: N\\/A<br>","imei":"C02Q7LV7G8WP","balance":"395.26","price":"0.03","id":"132820728","status":"success","ip":"73.241.183.37"}.get("result", "")
-
-            # Extract configuration and other values
-            config_match = re.search(r"Model Description:\s*(.*?)<br>", raw_result)
-            if config_match:
-                config = config_match.group(1).strip()
-
-            # Log extracted information
+        """Spec check via SickW service 30. Cache → history → paid."""
+        service = "30"
+        cached = self._get_sickw_cached(serial_number, service)
+        if cached is not None:
             self.log_event(
-                f"Full Check: {serial_number} | Config: {config} | "
-                f"Response Code: {response_code}"
+                f"SickW cache hit service={service} serial={serial_number} "
+                f"(skipping API) | Config: {cached[2]}"
             )
-            #self.log_event(f"Response: {response_body}")
+            return cached
 
-        except json.JSONDecodeError as e:
-            self.log_event(f"Failed to parse JSON for serial number {serial_number}: {e}")
-        except Exception as e:
-            self.log_event(f"Unhandled error during iCloud check for {serial_number}: {e}")
+        history = self.sickw_history_lookup(serial_number, service)
+        if history is not None:
+            self._set_sickw_cached(serial_number, service, history)
+            return history
 
-        # Return the extracted values
-        return icloud, mdm, config, model_name_sickw
+        return self._sickw_paid_check(serial_number, service)
 
 
     def clean_common_ocr_errors(self, text):
@@ -1276,25 +1395,66 @@ class MainApp:
             self.log_event(f"Failed to load batch_scanning flag: {e}")
         return False  # Default to False if not set or file not found
 
+    def _write_qr_png(self, payload: str, path: str) -> bool:
+        """Write a PNG QR for the inventory tag (warehouse scan)."""
+        if not payload or not path:
+            return False
+        # 1) Preferred: qrcode package
+        try:
+            import qrcode
+
+            img = qrcode.make(str(payload), border=1)
+            try:
+                img.save(path, kind="PNG")
+            except TypeError:
+                img.save(path, format="PNG")
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                return True
+        except Exception as e:
+            logging.warning(f"qrcode package unavailable: {e}")
+
+        # 2) Fallback: meepotek venv python (known to have qrcode)
+        helper_pythons = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "bin", "python"),
+            "/Users/meepotek/meepotek/.venv/bin/python",
+            "/Users/meepotek/MeepoScan/.venv/bin/python",
+        ]
+        for py in helper_pythons:
+            if not os.path.isfile(py):
+                continue
+            try:
+                script = (
+                    "import sys, qrcode\n"
+                    f"img = qrcode.make({payload!r}, border=1)\n"
+                    f"img.save({path!r})\n"
+                )
+                run([py, "-c", script], check=True, capture_output=True, timeout=20)
+                if os.path.exists(path) and os.path.getsize(path) > 0:
+                    return True
+            except Exception as e:
+                logging.warning(f"QR helper via {py} failed: {e}")
+
+        logging.error(f"QR generation failed for payload={payload!r}")
+        return False
+
     def _qr_data_uri(self, payload: str):
-        """Build a data-URI PNG QR for the inventory tag (warehouse scan)."""
+        """Build a data-URI PNG QR (fallback helper)."""
         if not payload:
             return None
         try:
             import base64
-            import qrcode
             from io import BytesIO
 
-            img = qrcode.make(str(payload), border=1)
             buf = BytesIO()
-            # qrcode PilImage uses kind=; plain PIL uses format=
-            try:
-                img.save(buf, kind="PNG")
-            except TypeError:
-                img.save(buf, format="PNG")
-            return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+            tmp = os.path.join(self.temp_dir, f"qr_{os.getpid()}.png")
+            if not self._write_qr_png(payload, tmp):
+                return None
+            with open(tmp, "rb") as f:
+                data = f.read()
+            os.remove(tmp)
+            return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
         except Exception as e:
-            logging.warning(f"QR generation unavailable: {e}")
+            logging.warning(f"QR data-URI unavailable: {e}")
             return None
 
     def export_to_inventory(
@@ -1314,7 +1474,12 @@ class MainApp:
     ):
         """
         Create / update inventory via Meepotek Scan In API.
-        Links to the active inspecting batch. Returns item dict (with tag) or None.
+        Links to the active inspecting batch.
+
+        Returns dict with item fields plus:
+          _scan_action: created|updated|exists|queued|...
+          _print_qr: True only when a brand-new inventory tag was created
+        or None on failure.
         """
         if not self.inventory_api_key:
             self.log_event("inventory_api_key missing in config.txt — skipping DB import")
@@ -1333,8 +1498,10 @@ class MainApp:
             "icloud": icloud,
             "mdm": mdm,
             "config": config,
+            # Server only prints QR on action=created; never auto-reprint.
             "print": True,
             "update": True,
+            "reprint": False,
         }
         try:
             response = requests.post(
@@ -1349,13 +1516,37 @@ class MainApp:
             except Exception:
                 body = {"raw": response.text}
             if response.status_code in (200, 201, 409):
-                item = body.get("item") or {}
+                item = dict(body.get("item") or {})
+                action = str(body.get("action") or "")
                 tag = item.get("tag")
-                self.log_event(
-                    f"Inventory import: {serial_number} → tag {tag} "
-                    f"(action={body.get('action')}, batch={body.get('scan_batch_id')})"
+                print_qr = action == "created" and bool(tag)
+                item["_scan_action"] = action
+                item["_print_qr"] = print_qr
+                item["_duplicate"] = bool(
+                    body.get("duplicate") or action in ("exists", "updated")
                 )
+                if print_qr:
+                    self.log_event(
+                        f"Inventory import: {serial_number} → NEW tag {tag} "
+                        f"(batch={body.get('scan_batch_id')})"
+                    )
+                else:
+                    self.log_event(
+                        f"Inventory already has {serial_number} as tag {tag} "
+                        f"(action={action}) — skipping inventory QR reprint"
+                    )
                 return item
+            # 202 = held in OCR pool; no tag yet for local QR label
+            if response.status_code == 202:
+                self.log_event(
+                    f"Inventory import queued for {serial_number} "
+                    f"(pool) — local label will print without tag QR"
+                )
+                return {
+                    "_scan_action": "queued",
+                    "_print_qr": False,
+                    "_duplicate": False,
+                }
             self.log_event(
                 f"Inventory import failed: HTTP {response.status_code} — {body}"
             )
@@ -1492,13 +1683,8 @@ class MainApp:
                         f"Spec Check Source 2 at techable: Could not find spec info (INVALID serial number) for serial: {serial_number}"
                     )
             '''
-            sickw_spec_check=self.sickwspecCheck(serial_number)
-            if sickw_spec_check:
-                icloud, mdm, config, model_name_sickw = sickw_spec_check
-            #cpu2 = None
-            #ram2 = None
-            # Perform an iCloud and MDM check (if required)
-            #print(self.check_type)
+            # iCloud mode (service 72) already includes config — skip service 30.
+            # Basic mode uses cheaper service 30 for specs only.
             if self.check_type:
                 icloud_info = self.icloudCheck(serial_number)
                 if icloud_info:
@@ -1507,15 +1693,20 @@ class MainApp:
                         f"iCloud MDM Check: {serial_number} | CPU: {cpu} | GPU: {gpu} | RAM: {ram} | "
                         f"SSD: {ssd} | iCloud: {icloud} | MDM: {mdm} | Config: {config} | Model: {model_name_sickw}"
                     )
+            else:
+                sickw_spec_check = self.sickwspecCheck(serial_number)
+                if sickw_spec_check:
+                    icloud, mdm, config, model_name_sickw = sickw_spec_check
 
-            # Import to inventory DB (Scan In batch) when batch mode is on, then print QR label
+            # Import to inventory DB (Scan In batch) when batch mode is on.
+            # Inventory QR is only printed for brand-new tags (never on rescan/reprint).
             inventory_tag = None
             if self.batch_scanning:
                 item = self.export_to_inventory(
                     serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2,
                     icloud, mdm, config, model_name_sickw,
                 )
-                if item:
+                if item and item.get("_print_qr"):
                     inventory_tag = item.get("tag")
                 # Keep Sheets export as a secondary sync
                 self.export_to_google_sheets(
