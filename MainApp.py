@@ -199,7 +199,7 @@ class MainApp:
         self.manual_stop = False
         self.manual_window = None
         self.batch_scanning = False
-        self.inventory_api_url = "https://meepo.ddns.net"
+        self.inventory_api_url = "https://meepo.win"
         self.inventory_api_key = ""
 
 
