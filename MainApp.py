@@ -1065,6 +1065,14 @@ class MainApp:
                 success = True
             except CalledProcessError as e:
                 detail = (e.stderr or e.stdout or "").strip()
+                if detail == "lp: No such file or directory":
+                    queues = run(["lpstat", "-p"], capture_output=True, text=True)
+                    listed = (queues.stdout or queues.stderr or "").strip() or "(no printers)"
+                    detail = (
+                        f"CUPS has no usable queue named {self.printer_name}. "
+                        f"The label PDF was written; lp could not open that printer. "
+                        f"Installed queues:\n{listed}"
+                    )
                 logging.error(f"Command execution failed: {e}" + (f" — {detail}" if detail else ""))
             except Exception as e:
                 logging.error(f"An error occurred while generating the label: {e}")
