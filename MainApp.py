@@ -1058,13 +1058,14 @@ class MainApp:
                 run(chrome_command, shell=True, check=True)
                 logging.info(f"Generated PDF file: {pdf_path}")
 
-                # Print the PDF file using the lp (line printer) command
-                print_command = f"lp -o fit-to-page -o media=Custom.4x1in -p {self.printer_name} '{pdf_path}'"
-                run(print_command, shell=True, check=True)
-                logging.info(f"Sent PDF to printer: {self.printer_name}")
+                # -d selects the queue. -p is job priority on current macOS lp.
+                print_command = f"lp -d {self.printer_name} -o fit-to-page -o media=Custom.4x1in '{pdf_path}'"
+                result = run(print_command, shell=True, check=True, capture_output=True, text=True)
+                logging.info(f"Sent PDF to printer: {self.printer_name} ({result.stdout.strip()})")
                 success = True
             except CalledProcessError as e:
-                logging.error(f"Command execution failed: {e}")
+                detail = (e.stderr or e.stdout or "").strip()
+                logging.error(f"Command execution failed: {e}" + (f" — {detail}" if detail else ""))
             except Exception as e:
                 logging.error(f"An error occurred while generating the label: {e}")
             finally:
