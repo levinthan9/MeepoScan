@@ -990,6 +990,24 @@ class MainApp:
             logging.error(f"An error occurred while writing to {self.csv_filepath}: {e}")
             return False
 
+    def _resolve_printer_name(self):
+        """Return the CUPS queue for printer_name, including a close name match."""
+        wanted = self.printer_name
+        result = run(["lpstat", "-p"], capture_output=True, text=True)
+        names = []
+        for line in (result.stdout or "").splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == "printer":
+                names.append(parts[1])
+        if wanted in names:
+            return wanted
+        folded = wanted.lower()
+        for name in names:
+            if name.lower() == folded or folded in name.lower():
+                logging.info(f"Using CUPS queue {name} for {wanted}")
+                return name
+        return wanted
+
     def generate_label(self, serial_number, model_name, cpu, gpu, ram, ssd, cpu2, ram2, icloud, mdm, config, model_name_sickw, tag=None):
             """
             Generates a label, saves it as PDF, and sends it to the printer.
@@ -1058,22 +1076,23 @@ class MainApp:
                 run(chrome_command, shell=True, check=True)
                 logging.info(f"Generated PDF file: {pdf_path}")
 
-                # -d selects the queue. -p is job priority on current macOS lp.
-                print_command = f"lp -d {self.printer_name} -o fit-to-page -o media=Custom.4x1in '{pdf_path}'"
-                result = run(print_command, shell=True, check=True, capture_output=True, text=True)
-                logging.info(f"Sent PDF to printer: {self.printer_name} ({result.stdout.strip()})")
+                # Match a manual print: queue defaults already set the 4x1 label size.
+                # -o media=Custom.4x1in makes current macOS lp fail with
+                # "No such file or directory" even when the queue can print the PDF.
+                printer = self._resolve_printer_name()
+                print_command = ["lp", "-d", printer, pdf_path]
+                result = run(print_command, check=True, capture_output=True, text=True)
+                logging.info(f"Sent PDF to printer: {printer} ({result.stdout.strip()})")
                 success = True
             except CalledProcessError as e:
                 detail = (e.stderr or e.stdout or "").strip()
-                if detail == "lp: No such file or directory":
-                    queues = run(["lpstat", "-p"], capture_output=True, text=True)
-                    listed = (queues.stdout or queues.stderr or "").strip() or "(no printers)"
-                    detail = (
-                        f"CUPS has no usable queue named {self.printer_name}. "
-                        f"The label PDF was written; lp could not open that printer. "
-                        f"Installed queues:\n{listed}"
-                    )
-                logging.error(f"Command execution failed: {e}" + (f" — {detail}" if detail else ""))
+                queues = run(["lpstat", "-p"], capture_output=True, text=True)
+                listed = (queues.stdout or queues.stderr or "").strip() or "(no printers)"
+                logging.error(
+                    f"Command execution failed: {e}"
+                    + (f" — {detail}" if detail else "")
+                    + f" — installed queues:\n{listed}"
+                )
             except Exception as e:
                 logging.error(f"An error occurred while generating the label: {e}")
             finally:
